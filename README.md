@@ -88,6 +88,8 @@ See [docs/adr/](./docs/adr/) for the full index. Highlights:
 - [ADR-0005](./docs/adr/0005-python-311-uv-dependency-groups.md): Python 3.11 + uv + PEP 735 groups
 - [ADR-0006](./docs/adr/0006-alignment-method-sft-dpo-with-kto-optional.md): SFT → DPO, with KTO path preserved
 - [ADR-0007](./docs/adr/0007-bootstrap-via-ssm-document.md): Training-stack bootstrap via SSM Document, not UserData
+- [ADR-0008](./docs/adr/0008-train-venv-self-contained-torch.md): Train venv carries its own torch stack (partially supersedes 0005)
+- [ADR-0009](./docs/adr/0009-unsloth-pins-torch-version.md): Unsloth dictates torch version (2.10.0+cu128)
 
 ## License
 

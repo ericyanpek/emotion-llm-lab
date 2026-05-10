@@ -112,3 +112,53 @@ S3 buckets are **retained** on purpose (training artifacts survive a bad
 aws s3 rb s3://emotion-companion-dev-artifacts-<account>-us-east-1 --force
 aws s3 rb s3://emotion-companion-dev-accesslogs-<account>-us-east-1 --force
 ```
+
+
+## Lessons from the first real deploy (2026-05-10)
+
+Keep this list close; each bullet is a failure we already debugged so you
+don't have to.
+
+### CFN rollout
+
+- **Regional VPC quota (5 by default) is often saturated in shared accounts.**
+  Our template therefore BYOs VPC/Subnet (default VPC when env vars unset)
+  rather than creating its own. See [ADR](#) if we ever need to revert.
+- **`AWS::SSM::Document` with a `Name:` cannot be updated in place** if the
+  change requires replacement. Omit `Name` so CFN generates one; consumers
+  read the doc name from the `BootstrapDocumentName` stack output.
+- **SSM agent's UserData marker alone is not enough** — bootstrap.sh also
+  polls `ssm describe-instance-information` for `PingStatus=Online`. An
+  instance can be `running` in EC2 long before SSM picks it up.
+
+### SSM Run Command
+
+- **`/bin/sh` on Ubuntu is `dash`, which doesn't support `set -o pipefail`.**
+  Every SSM Document step that uses bash-only features must start with
+  `#!/bin/bash`. Silent failure on line 1 otherwise.
+- **Truncated output in `get-command-invocation`**: when a step's output is
+  long, use the CloudWatch log group (`/emotion-companion/dev/bootstrap`)
+  to see the full stderr/stdout rather than the SSM API response.
+
+### Python / torch / uv
+
+- **LLaMA-Factory's `dependencies` lists `torch>=2.4.0` outright**, so you
+  can't avoid installing torch into the venv, even with
+  `--system-site-packages`. Plan for a self-contained train venv. See
+  [ADR-0008](../adr/0008-train-venv-self-contained-torch.md).
+- **`--extra-index-url` is per-command, not sticky.** For the cu128 wheel
+  index to apply across all installs, export
+  `UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128` and
+  `UV_INDEX_STRATEGY=unsafe-best-match` as env vars in every step.
+- **Unsloth downgrades torch silently** to match its pre-compiled kernels
+  (currently exactly `2.10.0+cu128`). Pin torch to match. See
+  [ADR-0009](../adr/0009-unsloth-pins-torch-version.md).
+- **`--no-build-isolation` requires every build backend pre-seeded in the
+  venv**. LLaMA-Factory needs `hatchling` AND `editables`; only seeding
+  hatchling yields `ModuleNotFoundError: editables`.
+- **LLaMA-Factory v0.9.4 doesn't expose `bitsandbytes` as an extra**
+  despite README references. Install `bitsandbytes` as a separate
+  `uv pip install`, not via `.[bitsandbytes]`.
+- **LLaMA-Factory cpp-extension warning "Please upgrade to torch >= 2.11.0"**
+  is expected given our Unsloth pin at 2.10.0. Training works; we accept
+  the minor perf trade for Unsloth's 2x speedup.

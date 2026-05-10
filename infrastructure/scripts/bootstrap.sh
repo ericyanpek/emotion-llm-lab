@@ -36,6 +36,7 @@ lookup() {
 
 INSTANCE_ID="$(lookup InstanceId)"
 DOC_NAME="$(lookup BootstrapDocumentName)"
+LOG_GROUP="$(lookup BootstrapLogGroup)"
 
 if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
   echo "ERROR: could not find InstanceId output on stack $STACK_NAME." >&2
@@ -44,6 +45,10 @@ fi
 if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
   echo "ERROR: could not find BootstrapDocumentName on stack $STACK_NAME." >&2
   exit 1
+fi
+if [ -z "$LOG_GROUP" ] || [ "$LOG_GROUP" = "None" ]; then
+  # Older stack without the new export — fall back to the project-scoped path
+  LOG_GROUP="/emotion-companion/dev/bootstrap"
 fi
 
 # ---- Wait for the instance to be SSM-reachable -----------------------------
@@ -95,14 +100,14 @@ echo "Sending SSM command: $DOC_NAME"
 echo "  instance:           $INSTANCE_ID"
 echo "  llama_factory_ref:  ${LLAMA_FACTORY_REF:-<stack default>}"
 echo "  region:             $AWS_REGION"
-echo "  log group:          /aws/ssm/$DOC_NAME"
+echo "  log group:          $LOG_GROUP"
 
 # shellcheck disable=SC2046  # intentional: conditional --parameters arg
 CMD_ID="$(aws ssm send-command \
   --document-name "$DOC_NAME" \
   --targets "Key=instanceids,Values=$INSTANCE_ID" \
   --region "$AWS_REGION" \
-  --cloud-watch-output-config "CloudWatchLogGroupName=/aws/ssm/$DOC_NAME,CloudWatchOutputEnabled=true" \
+  --cloud-watch-output-config "CloudWatchLogGroupName=$LOG_GROUP,CloudWatchOutputEnabled=true" \
   --timeout-seconds 3600 \
   $( [ -n "$LLAMA_FACTORY_REF" ] && echo "--parameters" && echo "$PARAMS" ) \
   --query 'Command.CommandId' --output text)"
@@ -110,7 +115,7 @@ CMD_ID="$(aws ssm send-command \
 echo
 echo "Command ID: $CMD_ID"
 echo "Stream logs with:"
-echo "  aws logs tail /aws/ssm/$DOC_NAME --follow --region $AWS_REGION"
+echo "  aws logs tail $LOG_GROUP --follow --region $AWS_REGION"
 echo "Inspect status with:"
 echo "  aws ssm list-command-invocations --command-id $CMD_ID --details --region $AWS_REGION"
 

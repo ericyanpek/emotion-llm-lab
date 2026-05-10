@@ -639,7 +639,11 @@ Resources:
   TrainingStackBootstrapDoc:
     Type: AWS::SSM::Document
     Properties:
-      Name: !Sub ${ProjectName}-${Environment}-training-stack-bootstrap
+      # Deliberately NOT setting Name: CloudFormation cannot update Content on
+      # a named SSM Document without replacement, and replacement is blocked
+      # when the resource has a custom Name. Letting CFN generate a name lets
+      # updates proceed (a new doc is created, old one deleted). Consumers
+      # look up the doc via the BootstrapDocumentName stack output.
       DocumentType: Command
       DocumentFormat: YAML
       TargetType: /AWS::EC2::Instance
@@ -660,6 +664,9 @@ Resources:
             default: !Ref LlamaFactoryRef
         mainSteps:
           # -------- Step 1: install uv as the ubuntu user --------------------
+          # NOTE: SSM Run Command shells default to /bin/sh (dash on Ubuntu),
+          # which does NOT support `set -o pipefail`. Every step's first line
+          # must be `#!/bin/bash` so the remaining bash-only syntax works.
           - action: aws:runShellScript
             name: InstallUv
             inputs:
@@ -667,6 +674,7 @@ Resources:
               timeoutSeconds: 300
               workingDirectory: /home/ubuntu
               runCommand:
+                - '#!/bin/bash'
                 - 'set -euo pipefail'
                 - 'if ! command -v /home/ubuntu/.local/bin/uv >/dev/null 2>&1; then'
                 - '  sudo -u ubuntu bash -lc "curl -LsSf https://astral.sh/uv/install.sh | sh"'
@@ -674,10 +682,17 @@ Resources:
                 - 'sudo -u ubuntu bash -lc "grep -qxF ''export PATH=\"/home/ubuntu/.local/bin:\$PATH\"'' /home/ubuntu/.bashrc || echo ''export PATH=\"/home/ubuntu/.local/bin:\$PATH\"'' >> /home/ubuntu/.bashrc"'
                 - '/home/ubuntu/.local/bin/uv --version'
 
-          # -------- Step 2: build the TRAIN venv on top of DLAMI -------------
-          # `--system-site-packages --python /opt/pytorch/bin/python` inherits
-          # DLAMI's CUDA-matched torch/flash-attn/bitsandbytes. Do NOT let pip
-          # upgrade torch in this venv — it will break CUDA alignment.
+          # -------- Step 2: build the TRAIN venv ---------------------------
+          # Originally planned to reuse DLAMI's /opt/pytorch via
+          # --system-site-packages, but LLaMA-Factory lists `torch>=2.4.0` in
+          # its hard dependencies, so uv resolves and installs torch into the
+          # venv regardless of inherited site-packages. We therefore build a
+          # self-contained venv and pin CUDA wheels explicitly via PyTorch's
+          # cu128 index (matching the DLAMI's CUDA 12.8 toolkit that ships with
+          # NVIDIA driver 580.x, so nvcc/bitsandbytes stay compatible).
+          # This costs ~5 min extra on first install and ~5 GB of disk, and
+          # supersedes the "reuse DLAMI torch" guidance in ADR-0005 —
+          # see ADR-0008 for the updated rationale.
           - action: aws:runShellScript
             name: CreateTrainVenv
             inputs:
@@ -685,13 +700,40 @@ Resources:
               timeoutSeconds: 1800
               workingDirectory: /home/ubuntu
               runCommand:
+                - '#!/bin/bash'
                 - 'set -euo pipefail'
                 - 'export PATH="/home/ubuntu/.local/bin:$PATH"'
-                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/venv-train ] || uv venv --python /opt/pytorch/bin/python --system-site-packages ~/venv-train"'
+                # IMPORTANT: pin the CUDA wheel index for the ENTIRE venv via
+                # env var so every uv pip install in this venv uses cu128.
+                # Passing --extra-index-url only on the first command allowed
+                # subsequent LLaMA-Factory dep resolution to pull torch from
+                # PyPI (CPU wheels), yielding a broken torch 2.10.0 vs
+                # torchaudio 2.11.0+cu128 mismatch. The env var ensures
+                # consistency across all subsequent resolves.
+                - 'export UV_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cu128"'
+                - 'export UV_INDEX_STRATEGY="unsafe-best-match"'
+                # Fresh venv using the DLAMI python (3.12) — no
+                # system-site-packages, since we're installing our own torch.
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/venv-train ] || uv venv --python /opt/pytorch/bin/python ~/venv-train"'
                 - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/LLaMA-Factory ] || git clone https://github.com/hiyouga/LLaMA-Factory.git ~/LLaMA-Factory; cd ~/LLaMA-Factory && git fetch --all --tags && git checkout {{ LlamaFactoryRef }}"'
-                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-train/bin/activate && cd ~/LLaMA-Factory && uv pip install -e .[metrics,deepspeed,bitsandbytes] --no-build-isolation"'
-                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-train/bin/activate && uv pip install unsloth"'
-                - 'sudo -u ubuntu bash -lc "source ~/venv-train/bin/activate && python -c ''import torch; print(f\"torch={torch.__version__} cuda={torch.cuda.is_available()}\")''"'
+                # Seed PEP 517 build backends so --no-build-isolation works.
+                # LLaMA-Factory under-specifies build-system.requires (missing
+                # `editables` that hatchling needs for editable installs).
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install hatchling editables setuptools wheel"'
+                # Pin torch to the exact version Unsloth expects
+                # (2.10.0+cu128). Unsloth's pre-compiled kernels require an
+                # exact torch match and will silently downgrade the rest of the
+                # stack otherwise, causing version drift across runs. See
+                # ADR-0009 for why we chose Unsloth acceleration over the
+                # LLaMA-Factory cpp-extension path that needs torch>=2.11.
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install torch==2.10.0+cu128 torchvision==0.25.0+cu128 torchaudio==2.10.0+cu128"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && cd ~/LLaMA-Factory && uv pip install -e .[metrics,deepspeed] --no-build-isolation"'
+                # Install bitsandbytes separately — LLaMA-Factory v0.9.4 does
+                # not expose it as an extra (despite README mentioning it).
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install bitsandbytes"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install unsloth"'
+                # Sanity check: torch/unsloth importable, CUDA live.
+                - 'sudo -u ubuntu bash -lc "source ~/venv-train/bin/activate && python -c ''import torch, unsloth; assert torch.cuda.is_available(); print(f\"torch={torch.__version__} cuda={torch.version.cuda} unsloth={unsloth.__version__} device={torch.cuda.get_device_name(0)}\")''"'
 
           # -------- Step 3: build the SERVE venv (vLLM, isolated) ------------
           - action: aws:runShellScript
@@ -701,6 +743,7 @@ Resources:
               timeoutSeconds: 1800
               workingDirectory: /home/ubuntu
               runCommand:
+                - '#!/bin/bash'
                 - 'set -euo pipefail'
                 - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/venv-serve ] || uv venv --python 3.11 ~/venv-serve"'
                 - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-serve/bin/activate && uv pip install vllm"'
@@ -713,16 +756,19 @@ Resources:
               runAsElevated: true
               timeoutSeconds: 60
               runCommand:
+                - '#!/bin/bash'
                 - 'set -euo pipefail'
                 - 'date -u +"%Y-%m-%dT%H:%M:%SZ" > /var/lib/cloud/instance/training-stack-ready'
                 - 'chown ubuntu:ubuntu /var/lib/cloud/instance/training-stack-ready'
                 - 'echo "Training stack bootstrap complete."'
 
-  # Log group that SSM Run Command streams into.
+  # Log group that SSM Run Command streams into. Name is project-scoped rather
+  # than derived from the (CFN-generated) SSM Document name, so consumers can
+  # reference a stable path across doc replacements.
   BootstrapLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/ssm/${ProjectName}-${Environment}-training-stack-bootstrap
+      LogGroupName: !Sub /${ProjectName}/${Environment}/bootstrap
       RetentionInDays: 30
 
   # ---------------------------------------------------------------------------
@@ -813,6 +859,12 @@ Outputs:
   Region:
     Description: Deployment region
     Value: !Ref AWS::Region
+
+  BootstrapLogGroup:
+    Description: CloudWatch Logs group that collects bootstrap output
+    Value: !Ref BootstrapLogGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-BootstrapLogGroup
 
   SsmStartSessionCmd:
     Description: Command to start interactive shell via SSM

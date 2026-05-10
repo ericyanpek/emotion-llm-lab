@@ -1,6 +1,6 @@
 # ADR-0005: Python 3.11 pinned, uv with PEP 735 dependency groups
 
-- **Status:** Accepted
+- **Status:** Accepted (partially superseded by [ADR-0008](./0008-train-venv-self-contained-torch.md) — the `--system-site-packages` strategy for the train venv did not survive real deployment)
 - **Date:** 2026-05-10
 - **Deciders:** project PoC author
 

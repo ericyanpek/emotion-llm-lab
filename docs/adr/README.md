@@ -24,6 +24,8 @@ it with new evidence.
 | [0005](./0005-python-311-uv-dependency-groups.md) | Accepted | Python 3.11 pinned, uv with PEP 735 dependency groups |
 | [0006](./0006-alignment-method-sft-dpo-with-kto-optional.md) | Accepted | Alignment method: SFT + DPO (KTO path preserved) |
 | [0007](./0007-bootstrap-via-ssm-document.md) | Accepted | Training-stack bootstrap via SSM Document, not UserData |
+| [0008](./0008-train-venv-self-contained-torch.md) | Accepted | Train venv carries its own torch stack (partially supersedes 0005) |
+| [0009](./0009-unsloth-pins-torch-version.md) | Accepted | Unsloth dictates the torch version (2.10.0+cu128) |
 
 ## Conventions
 

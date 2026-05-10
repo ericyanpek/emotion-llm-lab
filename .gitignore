@@ -1,0 +1,93 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============ Virtual environments ============
+.env
+.venv
+env/
+venv/
+ENV/
+.python-version
+
+# ============ Jupyter ============
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ============ IDE / editors ============
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============ ML artifacts (large files — use S3 instead) ============
+# Raw data
+data/raw/**
+data/processed/**
+data/cache/**
+!data/**/.gitkeep
+
+# Model weights & checkpoints
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.gguf
+outputs/
+checkpoints/
+saves/
+adapters/
+wandb/
+runs/
+tensorboard/
+
+# Hugging Face cache
+.cache/
+hf_home/
+
+# ============ Secrets & credentials ============
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+credentials
+.aws/
+
+# ============ CloudFormation / IaC ============
+# packaged templates (auto-generated)
+*.packaged.yaml
+.cfn-deploy/
+
+# ============ Logs ============
+*.log
+logs/
+
+# ============ OS ============
+Thumbs.db
+
+# CFN validation payloads (temporary)
+.cfn_payload.json

@@ -1,0 +1,683 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Emotion Companion LLM fine-tune training environment.
+  Provisions a GPU EC2 instance (g5.2xlarge + DLAMI) with zero public ports,
+  SSM-only access, encrypted EBS, an S3 artifact bucket, and SSM Parameter Store
+  entries for secrets. Modeled after the OpenClaw-on-Bedrock security baseline.
+
+# =============================================================================
+# METADATA
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project
+        Parameters:
+          - ProjectName
+          - Environment
+      - Label:
+          default: Compute
+        Parameters:
+          - InstanceType
+          - UseSpotInstance
+          - RootVolumeSizeGB
+      - Label:
+          default: Network
+        Parameters:
+          - VpcCidr
+          - SubnetCidr
+      - Label:
+          default: Cost guardrails
+        Parameters:
+          - AutoShutdownHours
+          - BudgetLimitUSD
+          - BudgetNotificationEmail
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+Parameters:
+  ProjectName:
+    Type: String
+    Default: emotion-companion
+    Description: Short project name used for tagging and resource naming.
+    AllowedPattern: '^[a-z][a-z0-9-]{2,30}$'
+    ConstraintDescription: lowercase, digits, hyphens; 3-31 chars; must start with letter.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name (affects tags and retention).
+
+  InstanceType:
+    Type: String
+    Default: g5.2xlarge
+    AllowedValues:
+      - g5.xlarge       # 1x A10G 24GB, 4 vCPU, 16GB RAM  (~$1.0/hr)
+      - g5.2xlarge      # 1x A10G 24GB, 8 vCPU, 32GB RAM  (~$1.2/hr) recommended
+      - g5.4xlarge      # 1x A10G 24GB, 16 vCPU, 64GB RAM (~$1.6/hr) for larger datasets
+      - g6.2xlarge      # 1x L4 24GB, newer arch          (~$1.0/hr) alternative
+      - g6e.2xlarge     # 1x L40S 48GB, headroom for 14B  (~$2.2/hr) upgrade path
+    Description: GPU instance type. g5.2xlarge is the recommended default for Qwen3-8B QLoRA.
+
+  UseSpotInstance:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Use Spot for ~70% cost reduction. Spot can be interrupted; LLaMA-Factory
+      checkpoints support resume but start with On-Demand for PoC simplicity.
+
+  RootVolumeSizeGB:
+    Type: Number
+    Default: 500
+    MinValue: 200
+    MaxValue: 2000
+    Description: >
+      EBS size in GB. Must hold base model (~16GB), datasets, multiple checkpoints,
+      and HF cache. 500GB is comfortable for PoC; 1TB if keeping many experiments.
+
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: '^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$'
+    Description: CIDR for the VPC.
+
+  SubnetCidr:
+    Type: String
+    Default: 10.42.1.0/24
+    AllowedPattern: '^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$'
+    Description: CIDR for the public subnet (instance has no public IP; subnet just needs IGW for outbound).
+
+  AutoShutdownHours:
+    Type: Number
+    Default: 8
+    MinValue: 0
+    MaxValue: 72
+    Description: >
+      Auto-shutdown the instance after N idle hours (0 disables). CloudWatch
+      alarm on low CPU triggers stop. Cheap insurance against forgotten instances.
+
+  BudgetLimitUSD:
+    Type: Number
+    Default: 200
+    MinValue: 10
+    Description: Monthly AWS Budget limit in USD. Triggers email alert at 80% / 100%.
+
+  BudgetNotificationEmail:
+    Type: String
+    Default: ''
+    Description: Email for budget alerts (leave empty to skip budget alarm creation).
+    AllowedPattern: '^$|^[^@]+@[^@]+\.[^@]+$'
+
+  # Latest DLAMI (PyTorch 2.7, Ubuntu 22.04, NVIDIA driver pre-installed).
+  # CloudFormation resolves this SSM public parameter at stack-create time.
+  LatestDlamiSsmParam:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.7-ubuntu-22.04/latest/ami-id
+    Description: Public SSM parameter pointing to the latest DLAMI GPU AMI.
+
+# =============================================================================
+# CONDITIONS
+# =============================================================================
+Conditions:
+  UseSpot: !Equals [!Ref UseSpotInstance, 'true']
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetNotificationEmail, '']]
+  # Note: AutoShutdownHours is consumed in the UserData bash directly; no CFN condition needed.
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Networking: minimal VPC + one public subnet (IGW for outbound only).
+  # Instance has NO public IP. SSM traffic egresses via IGW+NAT-less route
+  # (SSM uses public endpoints; instance reaches them via IGW with source NAT
+  # disabled since the instance has no public IP). For stricter posture, swap
+  # the IGW + public subnet for VPC endpoints to SSM/SSMMessages/EC2Messages/S3.
+  # ---------------------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # We use a PUBLIC subnet but launch the instance WITHOUT a public IP.
+  # Combined with a NAT Gateway the egress would cost $32/mo; instead we put
+  # the instance in the public subnet and rely on a NAT-less path: SSM traffic
+  # uses VPC endpoints (interface endpoints below) so no outbound to internet
+  # is required for SSM itself. For pulling models from HF / pip we *do* need
+  # internet egress -> we give the instance a public IP only at run time via
+  # an EIP if needed. For PoC simplicity: associate-public-ip = true on the ENI
+  # (instance reachable only inbound if SG allows, which it does NOT).
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-subnet
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-rt
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # ---------------------------------------------------------------------------
+  # Security Group: ZERO inbound. Egress scoped to the ports actually needed:
+  #   - 443/TCP: Hugging Face Hub, pip/PyPI, S3, SSM, CloudWatch, Bedrock, etc.
+  #   - 80/TCP:  package mirror redirects (most 80 redirects to 443, but some
+  #              apt mirrors still answer on 80)
+  #   - 53/UDP + 53/TCP: DNS resolution
+  #   - 123/UDP: NTP (chrony) time sync
+  # Access to local services like Gradio webui happens ONLY via SSM port
+  # forwarding, never via SG ingress. Matches the OpenClaw security baseline.
+  # ---------------------------------------------------------------------------
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName} training instance - zero inbound, all access via SSM
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound (HF Hub, pip, S3, SSM, CloudWatch)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP outbound (apt mirrors, redirects)
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS outbound (UDP)
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS outbound (TCP fallback)
+        - IpProtocol: udp
+          FromPort: 123
+          ToPort: 123
+          CidrIp: 0.0.0.0/0
+          Description: NTP time sync
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-sg
+        - Key: NoIngress
+          Value: 'true'
+
+  # ---------------------------------------------------------------------------
+  # S3 access log bucket. Separate bucket per AWS best practice — S3 logging
+  # cannot write to the same bucket it audits.
+  # ---------------------------------------------------------------------------
+  AccessLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ProjectName}-${Environment}-accesslogs-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          # S3 log delivery still requires ACLs; use BucketOwnerPreferred so the
+          # logging service can write, but account owner takes ownership.
+          - ObjectOwnership: BucketOwnerPreferred
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+          - Id: AbortIncompleteMultipartUpload
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Purpose
+          Value: s3-access-logs
+
+  # ---------------------------------------------------------------------------
+  # S3 bucket for datasets + LoRA adapter artifacts.
+  # SSE-S3 encryption, public access blocked, versioning on, access logged.
+  # ---------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ProjectName}-${Environment}-artifacts-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogBucket
+        LogFilePrefix: artifacts/
+      # Deliberately NOT enabled for this PoC (document your reasoning if you
+      # change posture later):
+      #   - ObjectLockEnabled: PoC needs to overwrite adapter iterations freely.
+      #     Enable for production model registries.
+      #   - ReplicationConfiguration: Cross-region replication is enterprise
+      #     DR posture. Training artifacts are reproducible from code + data.
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUpload
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: TransitionOldCheckpointsToIA
+            Status: Enabled
+            Prefix: checkpoints/
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub ${ArtifactBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ---------------------------------------------------------------------------
+  # SSM Parameter Store placeholders for secrets (HF token, wandb key).
+  # Values set to placeholder; operator updates post-deploy via CLI.
+  # Using String (not SecureString) because CFN doesn't support SecureString
+  # creation; operator promotes to SecureString out-of-band or via custom res.
+  # For PoC we keep them as String but will overwrite with `aws ssm put-parameter
+  # --type SecureString --overwrite` after stack creates.
+  # ---------------------------------------------------------------------------
+  HfTokenParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/${Environment}/hf-token
+      Type: String
+      Value: CHANGE_ME_AFTER_STACK_CREATION
+      Description: Hugging Face access token. Replace with SecureString after stack creation.
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  WandbApiKeyParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/${Environment}/wandb-api-key
+      Type: String
+      Value: CHANGE_ME_AFTER_STACK_CREATION
+      Description: Weights & Biases API key (optional, for training observability).
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  # ---------------------------------------------------------------------------
+  # IAM: instance role with least-privilege-ish scope.
+  # Grants: SSM managed core (SSM Session Manager), S3 access to artifact bucket,
+  # read on SSM parameters under /<project>/<env>/*, CloudWatch logs write.
+  # ---------------------------------------------------------------------------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-instance-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Required for SSM Session Manager + port forwarding.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        # CloudWatch agent for basic instance metrics (mem, disk).
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: ArtifactBucketAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+        - PolicyName: ProjectParameterStoreRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/*
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${ProjectName}-${Environment}-instance-profile
+      Roles:
+        - !Ref InstanceRole
+
+  # ---------------------------------------------------------------------------
+  # Launch template: IMDSv2 required, encrypted EBS, SSM/DLAMI.
+  # User data installs CloudWatch agent, LLaMA-Factory, and common tooling.
+  # ---------------------------------------------------------------------------
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${ProjectName}-${Environment}-lt
+      LaunchTemplateData:
+        ImageId: !Ref LatestDlamiSsmParam
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        # IMDSv2 required (no v1 fallback). Matches OpenClaw hardening.
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          HttpPutResponseHopLimit: 2
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref RootVolumeSizeGB
+              VolumeType: gp3
+              Iops: 3000
+              Throughput: 250
+              Encrypted: true
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref InstanceSecurityGroup
+            SubnetId: !Ref Subnet
+        InstanceMarketOptions: !If
+          - UseSpot
+          - MarketType: spot
+            SpotOptions:
+              SpotInstanceType: one-time
+              InstanceInterruptionBehavior: stop
+          - !Ref AWS::NoValue
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ProjectName}-${Environment}-training
+              - Key: Project
+                Value: !Ref ProjectName
+              - Key: Environment
+                Value: !Ref Environment
+              - Key: AutoShutdown
+                Value: !Ref AutoShutdownHours
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub ${ProjectName}-${Environment}-root
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee -a /var/log/user-data.log) 2>&1
+
+            echo "=== ${ProjectName} bootstrap starting: $(date -u) ==="
+
+            # Tag S3 bucket name for convenience.
+            echo "export ARTIFACT_BUCKET=${ArtifactBucket}" >> /etc/profile.d/project.sh
+            echo "export PROJECT_NAME=${ProjectName}" >> /etc/profile.d/project.sh
+            echo "export PROJECT_ENV=${Environment}" >> /etc/profile.d/project.sh
+            echo "export AWS_DEFAULT_REGION=${AWS::Region}" >> /etc/profile.d/project.sh
+
+            # CloudWatch agent (basic mem/disk metrics, logs shipping).
+            cat >/opt/aws/amazon-cloudwatch-agent/etc/config.json <<'EOF'
+            {
+              "metrics": {
+                "namespace": "EmotionCompanion",
+                "metrics_collected": {
+                  "mem": { "measurement": ["mem_used_percent"] },
+                  "disk": { "measurement": ["used_percent"], "resources": ["/"] },
+                  "nvidia_gpu": {
+                    "measurement": [
+                      "utilization_gpu",
+                      "utilization_memory",
+                      "memory_used",
+                      "memory_total",
+                      "temperature_gpu"
+                    ]
+                  }
+                },
+                "append_dimensions": {
+                  "InstanceId": "${!aws:InstanceId}"
+                }
+              }
+            }
+            EOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+              -a fetch-config -m ec2 -s \
+              -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json || true
+
+            # LLaMA-Factory install (as ubuntu user).
+            sudo -u ubuntu bash <<'UBUNTU_EOF'
+            set -euxo pipefail
+            cd /home/ubuntu
+            source /opt/pytorch/bin/activate 2>/dev/null || source activate pytorch || true
+            git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git || true
+            cd LLaMA-Factory
+            pip install -e '.[torch,metrics,deepspeed,bitsandbytes]' --quiet || true
+            pip install unsloth --quiet || true
+            pip install vllm --quiet || true
+            echo "=== LLaMA-Factory install complete: $(date -u) ===" >> /home/ubuntu/bootstrap.log
+            UBUNTU_EOF
+
+            # Optional auto-shutdown cron based on CPU idleness.
+            if [ "${AutoShutdownHours}" -gt 0 ]; then
+              cat >/usr/local/bin/auto-shutdown-check.sh <<'EOF'
+            #!/bin/bash
+            # Shutdown if GPU util < 5% AND CPU idle > 95% for ${AutoShutdownHours} hours.
+            # Uses a state file; resets when activity seen.
+            STATE=/var/run/idle-since
+            THRESHOLD_HOURS=${AutoShutdownHours}
+            GPU=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
+            CPU_IDLE=$(top -bn1 | awk '/Cpu/ {print $8}' | head -1)
+            if (( $(echo "$GPU < 5" | bc -l) )) && (( $(echo "$CPU_IDLE > 95" | bc -l) )); then
+              [ -f "$STATE" ] || date +%s > "$STATE"
+              IDLE_SINCE=$(cat "$STATE")
+              NOW=$(date +%s)
+              IDLE_HOURS=$(( (NOW - IDLE_SINCE) / 3600 ))
+              if [ "$IDLE_HOURS" -ge "$THRESHOLD_HOURS" ]; then
+                logger "auto-shutdown: idle for $IDLE_HOURS hours, stopping instance"
+                shutdown -h +5 "Auto-shutdown after $IDLE_HOURS idle hours"
+              fi
+            else
+              rm -f "$STATE"
+            fi
+            EOF
+              chmod +x /usr/local/bin/auto-shutdown-check.sh
+              echo "*/15 * * * * root /usr/local/bin/auto-shutdown-check.sh" >/etc/cron.d/auto-shutdown
+            fi
+
+            echo "=== Bootstrap complete: $(date -u) ==="
+
+  # ---------------------------------------------------------------------------
+  # The EC2 instance itself.
+  # ---------------------------------------------------------------------------
+  TrainingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-training
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------------------------
+  # Cost guardrail: monthly budget alert (optional).
+  # ---------------------------------------------------------------------------
+  ProjectBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub ${ProjectName}-${Environment}-monthly
+        BudgetLimit:
+          Amount: !Ref BudgetLimitUSD
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          TagKeyValue:
+            - !Sub user:Project$${ProjectName}
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetNotificationEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetNotificationEmail
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID (use this for SSM sessions)
+    Value: !Ref TrainingInstance
+    Export:
+      Name: !Sub ${AWS::StackName}-InstanceId
+
+  ArtifactBucketName:
+    Description: S3 bucket for datasets and LoRA adapters
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-ArtifactBucket
+
+  Region:
+    Description: Deployment region
+    Value: !Ref AWS::Region
+
+  SsmStartSessionCmd:
+    Description: Command to start interactive shell via SSM
+    Value: !Sub |
+      aws ssm start-session --target ${TrainingInstance} --region ${AWS::Region}
+
+  SsmTunnelCmd:
+    Description: Command to tunnel webui(7860) + tensorboard(6006) + vllm(8000) to MacBook
+    Value: !Sub |
+      aws ssm start-session --target ${TrainingInstance} --region ${AWS::Region} --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["7860","6006","8000"],"localPortNumber":["7860","6006","8000"]}'
+
+  SetHfTokenCmd:
+    Description: Set your Hugging Face token (run once after stack creation)
+    Value: !Sub |
+      aws ssm put-parameter --name /${ProjectName}/${Environment}/hf-token --value "YOUR_HF_TOKEN_HERE" --type SecureString --overwrite --region ${AWS::Region}

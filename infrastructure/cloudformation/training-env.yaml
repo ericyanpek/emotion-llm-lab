@@ -23,10 +23,10 @@ Metadata:
           - UseSpotInstance
           - RootVolumeSizeGB
       - Label:
-          default: Network
+          default: Network (bring-your-own VPC)
         Parameters:
-          - VpcCidr
-          - SubnetCidr
+          - VpcId
+          - SubnetId
       - Label:
           default: Cost guardrails
         Parameters:
@@ -80,17 +80,32 @@ Parameters:
       EBS size in GB. Must hold base model (~16GB), datasets, multiple checkpoints,
       and HF cache. 500GB is comfortable for PoC; 1TB if keeping many experiments.
 
-  VpcCidr:
-    Type: String
-    Default: 10.42.0.0/16
-    AllowedPattern: '^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$'
-    Description: CIDR for the VPC.
+  # -----------------------------------------------------------------------
+  # Networking: BYO VPC/Subnet
+  #
+  # We use existing VPC + Subnet rather than creating new ones, for two
+  # reasons:
+  #  - Shared AWS accounts often hit the 5-VPC soft limit; creating yet another
+  #    VPC per PoC stack is antisocial
+  #  - The default VPC in every region is already wired for public subnets
+  #    with an internet gateway and routes, matching our network needs
+  # The instance security group still has ZERO inbound rules, so sharing a
+  # VPC with other workloads does not reduce our security posture.
+  # -----------------------------------------------------------------------
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: >
+      Existing VPC to launch the instance in. In most accounts you can use
+      the default VPC; list with: aws ec2 describe-vpcs --filters Name=isDefault,Values=true
 
-  SubnetCidr:
-    Type: String
-    Default: 10.42.1.0/24
-    AllowedPattern: '^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$'
-    Description: CIDR for the public subnet (instance has no public IP; subnet just needs IGW for outbound).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >
+      Existing subnet in the chosen VPC. Must be in an AZ that offers the
+      target instance type (for g5.2xlarge in us-east-1: a/b/c/d/f). A public
+      subnet (MapPublicIpOnLaunch=true) is easiest; for a private subnet the
+      stack still works but requires VPC endpoints for SSM/S3 you set up
+      out-of-band.
 
   AutoShutdownHours:
     Type: Number
@@ -158,79 +173,11 @@ Conditions:
 Resources:
 
   # ---------------------------------------------------------------------------
-  # Networking: minimal VPC + one public subnet (IGW for outbound only).
-  # Instance has NO public IP. SSM traffic egresses via IGW+NAT-less route
-  # (SSM uses public endpoints; instance reaches them via IGW with source NAT
-  # disabled since the instance has no public IP). For stricter posture, swap
-  # the IGW + public subnet for VPC endpoints to SSM/SSMMessages/EC2Messages/S3.
+  # Networking: BYO existing VPC + Subnet via parameters (VpcId, SubnetId).
+  # This stack does NOT create a VPC because shared AWS accounts frequently
+  # hit the 5-VPC soft limit. Our security posture (zero-inbound SG,
+  # SSM-only access) does not depend on VPC isolation.
   # ---------------------------------------------------------------------------
-  Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: !Ref VpcCidr
-      EnableDnsHostnames: true
-      EnableDnsSupport: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-vpc
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-igw
-
-  VpcGatewayAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref Vpc
-      InternetGatewayId: !Ref InternetGateway
-
-  # We use a PUBLIC subnet but launch the instance WITHOUT a public IP.
-  # Combined with a NAT Gateway the egress would cost $32/mo; instead we put
-  # the instance in the public subnet and rely on a NAT-less path: SSM traffic
-  # uses VPC endpoints (interface endpoints below) so no outbound to internet
-  # is required for SSM itself. For pulling models from HF / pip we *do* need
-  # internet egress -> we give the instance a public IP only at run time via
-  # an EIP if needed. For PoC simplicity: associate-public-ip = true on the ENI
-  # (instance reachable only inbound if SG allows, which it does NOT).
-  Subnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !Ref SubnetCidr
-      AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-subnet
-
-  RouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-rt
-
-  DefaultRoute:
-    Type: AWS::EC2::Route
-    DependsOn: VpcGatewayAttachment
-    Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  SubnetRouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref Subnet
-      RouteTableId: !Ref RouteTable
 
   # ---------------------------------------------------------------------------
   # Security Group: ZERO inbound. Egress scoped to the ports actually needed:
@@ -246,7 +193,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: !Sub ${ProjectName} training instance - zero inbound, all access via SSM
-      VpcId: !Ref Vpc
+      VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443
@@ -516,7 +463,7 @@ Resources:
             AssociatePublicIpAddress: true
             Groups:
               - !Ref InstanceSecurityGroup
-            SubnetId: !Ref Subnet
+            SubnetId: !Ref SubnetId
         InstanceMarketOptions: !If
           - UseSpot
           - MarketType: spot

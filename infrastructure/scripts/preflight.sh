@@ -137,6 +137,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "VPC capacity"
+# ---------------------------------------------------------------------------
+# Each stack can BYO VPC (no new VPC created), but if the caller hasn't set
+# VPC_ID we need at least the default VPC to exist. Warn (not fail) when the
+# regional VPC quota is saturated because it still might work if the default
+# VPC is present.
+VPC_QUOTA="$(aws service-quotas get-service-quota \
+  --service-code vpc --quota-code L-F678F1CE \
+  --region "$AWS_REGION" \
+  --query 'Quota.Value' --output text 2>/dev/null || echo 0)"
+VPC_QUOTA="${VPC_QUOTA%.*}"
+VPC_COUNT="$(aws ec2 describe-vpcs --region "$AWS_REGION" \
+  --query 'length(Vpcs)' --output text 2>/dev/null || echo 0)"
+DEFAULT_VPC="$(aws ec2 describe-vpcs \
+  --filters Name=isDefault,Values=true \
+  --region "$AWS_REGION" \
+  --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo None)"
+
+if [ "$DEFAULT_VPC" != "None" ] && [ -n "$DEFAULT_VPC" ]; then
+  ok "Default VPC present: $DEFAULT_VPC (BYO networking will use this)"
+else
+  warn "No default VPC in $AWS_REGION — must pass VPC_ID / SUBNET_ID explicitly"
+fi
+if [ "$VPC_COUNT" -ge "$VPC_QUOTA" ]; then
+  warn "VPC usage: $VPC_COUNT / $VPC_QUOTA (saturated; stack uses existing VPC so ok)"
+else
+  ok "VPC usage: $VPC_COUNT / $VPC_QUOTA"
+fi
+
+# ---------------------------------------------------------------------------
 section "AMI & service endpoints"
 # ---------------------------------------------------------------------------
 DLAMI_PARAM="/aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.7-ubuntu-22.04/latest/ami-id"

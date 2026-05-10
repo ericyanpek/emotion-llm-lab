@@ -12,7 +12,7 @@ set -euo pipefail
 
 PROJECT_NAME="${PROJECT_NAME:-emotion-companion}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 put_secret() {
   local name="$1"

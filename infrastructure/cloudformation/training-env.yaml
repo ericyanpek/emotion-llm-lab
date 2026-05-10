@@ -121,10 +121,15 @@ Parameters:
 
   LlamaFactoryRef:
     Type: String
-    Default: main
+    # Pinned to the v0.9.4 release commit (Apr 2026). Using a full SHA rather
+    # than the 'v0.9.4' tag so the ref is guaranteed immutable. Bump via a
+    # `make bootstrap` with LLAMA_FACTORY_REF=<newer-sha>, then commit the new
+    # default here once validated.
+    Default: 95ac3f2373b82662c1bd855c284d3379e6a763d3
     Description: >
-      LLaMA-Factory git ref to check out during bootstrap. Use a commit SHA for
-      reproducibility (e.g. a9b5c3d); `main` is convenient but moves.
+      LLaMA-Factory git ref (commit SHA, tag, or branch). Default is the pinned
+      v0.9.4 release SHA for reproducibility. Override per-run with
+      LLAMA_FACTORY_REF=<ref> make bootstrap.
 
 # =============================================================================
 # CONDITIONS

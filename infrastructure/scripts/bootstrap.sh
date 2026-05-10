@@ -15,14 +15,14 @@
 #
 # Env vars:
 #   STACK_NAME         (default: emotion-companion-dev)
-#   AWS_REGION         (default: us-west-2)
+#   AWS_REGION         (default: us-east-1)
 #   LLAMA_FACTORY_REF  (default: use stack parameter; override for pinning)
 #   WAIT               (default: true; set 'false' to return immediately)
 
 set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-emotion-companion-dev}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 LLAMA_FACTORY_REF="${LLAMA_FACTORY_REF:-}"
 WAIT="${WAIT:-true}"
 

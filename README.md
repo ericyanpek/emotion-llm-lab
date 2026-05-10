@@ -59,10 +59,11 @@ The EC2 venvs are built automatically by the CloudFormation user-data.
 
 ## Getting started
 
-1. [Deploy training infrastructure](./infrastructure/README.md)
+1. [Deploy training infrastructure](./infrastructure/README.md) — CFN stack + SSM bootstrap
 2. Connect via SSM tunnel
-3. Install LLaMA-Factory on EC2
-4. Prep data → SFT → DPO → eval (coming next)
+3. Prep data → SFT → DPO → eval (coming next)
+
+First-time deploy? Follow the [**First-deploy runbook**](./docs/runbooks/first-deploy.md).
 
 ## Status
 

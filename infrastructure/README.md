@@ -73,7 +73,7 @@ See [ADR-0007](../docs/adr/0007-bootstrap-via-ssm-document.md) for the full reas
 ## Deploy
 
 ```bash
-# defaults: us-west-2, g5.2xlarge on-demand, 500GB disk, $200 budget
+# defaults: us-east-1, g5.2xlarge on-demand, 500GB disk, $200 budget
 ./infrastructure/scripts/deploy.sh
 
 # with spot and budget alerts
@@ -102,7 +102,7 @@ Logs stream to CloudWatch:
 
 ```bash
 aws logs tail /aws/ssm/emotion-companion-dev-training-stack-bootstrap \
-  --follow --region us-west-2
+  --follow --region us-east-1
 ```
 
 ## After the stack is up
@@ -221,7 +221,7 @@ Modeled on the OpenClaw reference; explicit choices:
 #   brew install cloudformation-guard
 ```
 
-## Cost estimate (us-west-2, on-demand)
+## Cost estimate (us-east-1, on-demand)
 
 | Resource | Monthly |
 |---|---|

@@ -9,7 +9,7 @@
 #
 # Environment variables:
 #   STACK_NAME          (default: emotion-companion-dev)
-#   AWS_REGION          (default: us-west-2)
+#   AWS_REGION          (default: us-east-1)
 #   PROJECT_NAME        (default: emotion-companion)
 #   ENVIRONMENT         (default: dev)
 #   INSTANCE_TYPE       (default: g5.2xlarge)
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-emotion-companion-dev}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 PROJECT_NAME="${PROJECT_NAME:-emotion-companion}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-g5.2xlarge}"
@@ -38,6 +38,23 @@ TEMPLATE="${SCRIPT_DIR}/../cloudformation/training-env.yaml"
 if [ ! -f "$TEMPLATE" ]; then
   echo "ERROR: template not found at $TEMPLATE" >&2
   exit 1
+fi
+
+# ---- Preflight -------------------------------------------------------------
+# Unless SKIP_PREFLIGHT=1, run the same checks the user would run manually.
+# This surfaces quota/permission/name-collision issues in 30 seconds instead
+# of 5 minutes of CFN rollback.
+if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
+  PREFLIGHT="${SCRIPT_DIR}/preflight.sh"
+  if [ -x "$PREFLIGHT" ]; then
+    echo "--- Running preflight checks (set SKIP_PREFLIGHT=1 to skip) ---"
+    if ! "$PREFLIGHT"; then
+      echo
+      echo "ERROR: preflight failed. Fix the issues above, or set SKIP_PREFLIGHT=1 to proceed anyway." >&2
+      exit 1
+    fi
+    echo
+  fi
 fi
 
 echo "=== Emotion Companion Training Env Deploy ==="

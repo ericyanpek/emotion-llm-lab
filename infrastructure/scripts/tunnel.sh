@@ -16,7 +16,7 @@
 set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-emotion-companion-dev}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # Check session-manager-plugin is installed.
 if ! command -v session-manager-plugin >/dev/null 2>&1; then

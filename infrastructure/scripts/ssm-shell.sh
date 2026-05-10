@@ -13,7 +13,7 @@
 set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-emotion-companion-dev}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # shellcheck disable=SC2016  # JMESPath literal below; intentionally not shell-expanded
 INSTANCE_ID=$(aws cloudformation describe-stacks \

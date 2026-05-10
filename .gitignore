@@ -93,3 +93,6 @@ Thumbs.db
 
 # CFN validation payloads (temporary)
 .cfn_payload.json
+
+# Commit message scratch file (used by fs_write → git commit -F pattern)
+.commit-msg

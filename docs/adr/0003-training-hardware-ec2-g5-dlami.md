@@ -30,7 +30,7 @@ Good:
   stack — we skip hours of "why doesn't `pip install torch` work"
 - SSM parameter resolution means we always boot on the latest patched AMI
   without pinning a stale `ami-xxxxx` in the template
-- A10G On-Demand ~$1.2/hr in us-west-2; 8-hour training day ~$10 keeps PoC
+- A10G On-Demand ~$1.2/hr in us-east-1; 8-hour training day ~$10 keeps PoC
   cheap if we remember to stop the instance
 
 Bad / watch-outs:
@@ -57,4 +57,4 @@ Bad / watch-outs:
 ## References
 
 - DLAMI SSM parameter docs: https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-x86-gpu-pytorch-2.7-ubuntu-22-04.html
-- g5 pricing: AWS EC2 pricing page (us-west-2, on-demand $1.212/hr at decision date)
+- g5 pricing: AWS EC2 pricing page (us-east-1, on-demand $1.212/hr at decision date)

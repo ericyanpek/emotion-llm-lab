@@ -162,3 +162,41 @@ don't have to.
 - **LLaMA-Factory cpp-extension warning "Please upgrade to torch >= 2.11.0"**
   is expected given our Unsloth pin at 2.10.0. Training works; we accept
   the minor perf trade for Unsloth's 2x speedup.
+
+
+### Starting LLaMA-Factory webui
+
+Once bootstrap is green, start the webui from your Mac via a single SSM
+command, then tunnel to it:
+
+```bash
+# On the instance, in a detached tmux session (survives SSM disconnect):
+aws ssm send-command --instance-ids <i-...> --document-name AWS-RunShellScript \
+  --region us-east-1 --parameters 'commands=[
+    "sudo -iu ubuntu bash -c \"tmux new-session -d -s webui /home/ubuntu/start-webui.sh\""
+  ]'
+
+# Mac side: tunnel (defaults to 7860/6006/8000)
+make tunnel
+
+# Browser:
+open http://localhost:7860
+```
+
+### Three more pitfalls you'll hit after bootstrap succeeds
+
+- **`sudo -u ubuntu` vs `sudo -iu ubuntu`**: the former keeps root's HOME
+  and `/tmp/tmux-0/` path, so tmux under it can't find its server socket
+  (`error connecting to /tmp/tmux-0/default`). Always use `-i` (login shell)
+  for anything that needs ubuntu's real environment, including tmux and
+  anything that reads `~/.bashrc`.
+- **`AWS-StartPortForwardingSession` accepts exactly ONE port per session**,
+  despite the old docs showing arrays. Our tunnel.sh spawns one subprocess
+  per port and traps SIGINT to clean all up. Passing three-element
+  `["7860","6006","8000"]` fails with `InvalidParameters`.
+- **Unsloth violates LLaMA-Factory's declared upper bounds at runtime**.
+  After `uv pip install unsloth`, `check_dependencies()` in
+  `llamafactory/extras/misc.py` raises ImportError because datasets, peft,
+  etc. are now too new. The SSM Document re-pins them immediately after
+  the unsloth install; keep that pin list synced with the bounds in that
+  misc.py file on every `llama_factory_ref` bump.

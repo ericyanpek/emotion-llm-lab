@@ -63,6 +63,12 @@ Bad / watch-outs:
 - We are **locked to whatever torch Unsloth pins today** (2.10.0). When
   Unsloth releases a new version compatible with torch 2.11+, we must bump
   both together, not incrementally
+- **Unsloth also drags up other packages past LLaMA-Factory's declared
+  upper bounds** (`datasets<=4.0.0`, `peft<=0.17.1`, etc.). The bootstrap
+  SSM Document re-pins these *after* the unsloth install, restoring
+  LLaMA-Factory's runtime `check_dependencies()` window. That re-pin list
+  must stay synced with LLaMA-Factory's `src/llamafactory/extras/misc.py`
+  on every `llama_factory_ref` bump
 - **Check this ADR on every `llama_factory_ref` bump**: if a future
   LLaMA-Factory release hard-requires torch ≥ 2.11 (currently it's only a
   soft runtime warning), Unsloth becomes unusable until it catches up, and

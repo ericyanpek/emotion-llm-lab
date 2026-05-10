@@ -732,8 +732,18 @@ Resources:
                 # not expose it as an extra (despite README mentioning it).
                 - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install bitsandbytes"'
                 - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install unsloth"'
-                # Sanity check: torch/unsloth importable, CUDA live.
+                # Unsloth systematically upgrades packages past LLaMA-Factory's
+                # declared upper bounds (datasets<=4.0.0, peft<=0.17.1, etc.),
+                # triggering ImportError at webui/train startup. Re-pin the
+                # five constrained packages AFTER unsloth so they land back
+                # within LLaMA-Factory's check_dependencies() window. Keep
+                # this list aligned with the upper bounds LLaMA-Factory
+                # enforces in src/llamafactory/extras/misc.py.
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; export UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128; export UV_INDEX_STRATEGY=unsafe-best-match; source ~/venv-train/bin/activate && uv pip install ''transformers>=4.51.0,<=4.57.1'' ''datasets>=2.16.0,<=4.0.0'' ''accelerate>=1.3.0,<=1.11.0'' ''peft>=0.14.0,<=0.17.1'' ''trl>=0.18.0,<=0.24.0''"'
+                # Sanity check: torch/unsloth importable, CUDA live, and
+                # LLaMA-Factory's runtime version check passes.
                 - 'sudo -u ubuntu bash -lc "source ~/venv-train/bin/activate && python -c ''import torch, unsloth; assert torch.cuda.is_available(); print(f\"torch={torch.__version__} cuda={torch.version.cuda} unsloth={unsloth.__version__} device={torch.cuda.get_device_name(0)}\")''"'
+                - 'sudo -u ubuntu bash -lc "source ~/venv-train/bin/activate && cd ~/LLaMA-Factory && python -c ''from llamafactory.extras.misc import check_dependencies; check_dependencies(); print(\"LLaMA-Factory version check: OK\")''"'
 
           # -------- Step 3: build the SERVE venv (vLLM, isolated) ------------
           - action: aws:runShellScript

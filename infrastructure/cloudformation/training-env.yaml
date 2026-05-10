@@ -119,6 +119,13 @@ Parameters:
     Default: /aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.7-ubuntu-22.04/latest/ami-id
     Description: Public SSM parameter pointing to the latest DLAMI GPU AMI.
 
+  LlamaFactoryRef:
+    Type: String
+    Default: main
+    Description: >
+      LLaMA-Factory git ref to check out during bootstrap. Use a commit SHA for
+      reproducibility (e.g. a9b5c3d); `main` is convenient but moves.
+
 # =============================================================================
 # CONDITIONS
 # =============================================================================
@@ -514,37 +521,64 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            set -euxo pipefail
+            # =============================================================
+            # MINIMAL BOOTSTRAP — keep this intentionally small.
+            #
+            # Heavy work (LLaMA-Factory, vLLM, model downloads) happens via
+            # the separate SSM Document triggered by `make bootstrap` after
+            # the instance is Running. See:
+            #   infrastructure/cloudformation/bootstrap-document.yaml
+            #   infrastructure/scripts/bootstrap.sh
+            #
+            # Rationale: UserData failures are silent to CloudFormation and
+            # cannot be retried without recreating the instance. Anything
+            # fragile (pip installs, GPU driver-dependent builds) belongs
+            # in SSM Documents where we get structured exit codes, retries,
+            # and CloudWatch Logs output.
+            # =============================================================
+            set -euo pipefail
             exec > >(tee -a /var/log/user-data.log) 2>&1
 
-            echo "=== ${ProjectName} bootstrap starting: $(date -u) ==="
+            echo "=== ${ProjectName} minimal bootstrap: $(date -u) ==="
 
-            # Tag S3 bucket name for convenience.
-            echo "export ARTIFACT_BUCKET=${ArtifactBucket}" >> /etc/profile.d/project.sh
-            echo "export PROJECT_NAME=${ProjectName}" >> /etc/profile.d/project.sh
-            echo "export PROJECT_ENV=${Environment}" >> /etc/profile.d/project.sh
-            echo "export AWS_DEFAULT_REGION=${AWS::Region}" >> /etc/profile.d/project.sh
+            # Project-scoped env vars for every login shell.
+            cat >/etc/profile.d/project.sh <<EOF
+            export ARTIFACT_BUCKET="${ArtifactBucket}"
+            export PROJECT_NAME="${ProjectName}"
+            export PROJECT_ENV="${Environment}"
+            export AWS_DEFAULT_REGION="${AWS::Region}"
+            EOF
+            chmod 0644 /etc/profile.d/project.sh
 
-            # CloudWatch agent (basic mem/disk metrics, logs shipping).
+            # CloudWatch agent — mem/disk/GPU metrics + ship /var/log/user-data.log.
             cat >/opt/aws/amazon-cloudwatch-agent/etc/config.json <<'EOF'
             {
               "metrics": {
                 "namespace": "EmotionCompanion",
                 "metrics_collected": {
-                  "mem": { "measurement": ["mem_used_percent"] },
+                  "mem":  { "measurement": ["mem_used_percent"] },
                   "disk": { "measurement": ["used_percent"], "resources": ["/"] },
                   "nvidia_gpu": {
                     "measurement": [
-                      "utilization_gpu",
-                      "utilization_memory",
-                      "memory_used",
-                      "memory_total",
-                      "temperature_gpu"
+                      "utilization_gpu", "utilization_memory",
+                      "memory_used", "memory_total", "temperature_gpu"
                     ]
                   }
                 },
-                "append_dimensions": {
-                  "InstanceId": "${!aws:InstanceId}"
+                "append_dimensions": { "InstanceId": "${!aws:InstanceId}" }
+              },
+              "logs": {
+                "logs_collected": {
+                  "files": {
+                    "collect_list": [
+                      { "file_path": "/var/log/user-data.log",
+                        "log_group_name": "/emotion-companion/${Environment}/user-data",
+                        "log_stream_name": "{instance_id}" },
+                      { "file_path": "/var/log/amazon/ssm/amazon-ssm-agent.log",
+                        "log_group_name": "/emotion-companion/${Environment}/ssm-agent",
+                        "log_stream_name": "{instance_id}" }
+                    ]
+                  }
                 }
               }
             }
@@ -553,81 +587,35 @@ Resources:
               -a fetch-config -m ec2 -s \
               -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json || true
 
-            # ----------------------------------------------------------------
-            # Python environments (uv-managed, two separate venvs):
-            #   ~/venv-train  : LLaMA-Factory + training stack (imports DLAMI's
-            #                   pre-built torch/cuda; do NOT reinstall torch)
-            #   ~/venv-serve  : vLLM (conflicts with train env; separate venv)
-            # The DLAMI ships torch 2.7 at /opt/pytorch with CUDA/flash-attn/
-            # bitsandbytes aligned — any `pip install torch` wipes that out.
-            # ----------------------------------------------------------------
-            sudo -u ubuntu bash <<'UBUNTU_EOF'
-            set -euxo pipefail
-            cd /home/ubuntu
-
-            # Install uv (fast, reproducible Python package manager).
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            export PATH="/home/ubuntu/.local/bin:$PATH"
-            echo 'export PATH="/home/ubuntu/.local/bin:$PATH"' >> /home/ubuntu/.bashrc
-
-            # ----- TRAIN venv -----------------------------------------------
-            # Build on top of DLAMI's /opt/pytorch so we inherit the correctly
-            # compiled torch/cuda stack instead of reinstalling it.
-            uv venv --python /opt/pytorch/bin/python --system-site-packages ~/venv-train
-
-            source ~/venv-train/bin/activate
-            # Clone LLaMA-Factory pinned to the main branch; tag-pin in production.
-            git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git ~/LLaMA-Factory || true
-            cd ~/LLaMA-Factory
-
-            # Install LLaMA-Factory and the training-group extras from pyproject.
-            # `--no-deps` on torch would be ideal; simplest is to install LLaMA-Factory
-            # without the torch extra, relying on DLAMI's torch via system-site-packages.
-            uv pip install -e '.[metrics,deepspeed,bitsandbytes]' --no-build-isolation
-            uv pip install unsloth
-            deactivate
-
-            # ----- SERVE venv -----------------------------------------------
-            # vLLM has its own opinionated dependencies that conflict with train.
-            # Keep it isolated; pull HF token from SSM at runtime, not here.
-            uv venv --python 3.11 ~/venv-serve
-            source ~/venv-serve/bin/activate
-            uv pip install vllm
-            deactivate
-
-            echo "=== environments ready ===" >> /home/ubuntu/bootstrap.log
-            echo "  ~/venv-train  (source it for llamafactory-cli)"  >> /home/ubuntu/bootstrap.log
-            echo "  ~/venv-serve  (source it for vllm serve)"        >> /home/ubuntu/bootstrap.log
-            UBUNTU_EOF
-
-            # Optional auto-shutdown cron based on CPU idleness.
+            # Optional auto-shutdown cron based on GPU+CPU idleness.
             if [ "${AutoShutdownHours}" -gt 0 ]; then
               cat >/usr/local/bin/auto-shutdown-check.sh <<'EOF'
             #!/bin/bash
-            # Shutdown if GPU util < 5% AND CPU idle > 95% for ${AutoShutdownHours} hours.
-            # Uses a state file; resets when activity seen.
+            # Stop instance if GPU util <5% AND CPU idle >95% for THRESHOLD_HOURS.
             STATE=/var/run/idle-since
-            THRESHOLD_HOURS=${AutoShutdownHours}
+            THRESHOLD_HOURS=__HOURS__
             GPU=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
             CPU_IDLE=$(top -bn1 | awk '/Cpu/ {print $8}' | head -1)
             if (( $(echo "$GPU < 5" | bc -l) )) && (( $(echo "$CPU_IDLE > 95" | bc -l) )); then
               [ -f "$STATE" ] || date +%s > "$STATE"
-              IDLE_SINCE=$(cat "$STATE")
-              NOW=$(date +%s)
-              IDLE_HOURS=$(( (NOW - IDLE_SINCE) / 3600 ))
+              IDLE_HOURS=$(( ($(date +%s) - $(cat "$STATE")) / 3600 ))
               if [ "$IDLE_HOURS" -ge "$THRESHOLD_HOURS" ]; then
-                logger "auto-shutdown: idle for $IDLE_HOURS hours, stopping instance"
+                logger "auto-shutdown: idle $IDLE_HOURS h, stopping"
                 shutdown -h +5 "Auto-shutdown after $IDLE_HOURS idle hours"
               fi
             else
               rm -f "$STATE"
             fi
             EOF
+              sed -i "s/__HOURS__/${AutoShutdownHours}/" /usr/local/bin/auto-shutdown-check.sh
               chmod +x /usr/local/bin/auto-shutdown-check.sh
               echo "*/15 * * * * root /usr/local/bin/auto-shutdown-check.sh" >/etc/cron.d/auto-shutdown
             fi
 
-            echo "=== Bootstrap complete: $(date -u) ==="
+            # Mark bootstrap complete. `make bootstrap` checks for this marker.
+            touch /var/lib/cloud/instance/userdata-complete
+            echo "=== Minimal bootstrap done: $(date -u) ==="
+            echo "=== Next step: run 'make bootstrap' from your Mac to install training stack ==="
 
   # ---------------------------------------------------------------------------
   # The EC2 instance itself.
@@ -645,6 +633,103 @@ Resources:
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref Environment
+
+  # ---------------------------------------------------------------------------
+  # SSM Document that installs the training stack AFTER the instance is up.
+  # Triggered by `make bootstrap` (which calls aws ssm send-command).
+  #
+  # Why not in UserData: UserData fires once, fails silently as far as CFN is
+  # concerned, and cannot be retried. SSM Run Command returns a structured
+  # status per step, streams output to CloudWatch Logs, and can be re-invoked.
+  # ---------------------------------------------------------------------------
+  TrainingStackBootstrapDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-training-stack-bootstrap
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /AWS::EC2::Instance
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+      Content:
+        schemaVersion: '2.2'
+        description: >
+          Install the emotion-companion training stack (uv, LLaMA-Factory,
+          Unsloth, vLLM) on a DLAMI instance. Idempotent — safe to re-run.
+        parameters:
+          LlamaFactoryRef:
+            type: String
+            description: LLaMA-Factory git ref (commit/tag/branch).
+            default: !Ref LlamaFactoryRef
+        mainSteps:
+          # -------- Step 1: install uv as the ubuntu user --------------------
+          - action: aws:runShellScript
+            name: InstallUv
+            inputs:
+              runAsElevated: false
+              timeoutSeconds: 300
+              workingDirectory: /home/ubuntu
+              runCommand:
+                - 'set -euo pipefail'
+                - 'if ! command -v /home/ubuntu/.local/bin/uv >/dev/null 2>&1; then'
+                - '  sudo -u ubuntu bash -lc "curl -LsSf https://astral.sh/uv/install.sh | sh"'
+                - 'fi'
+                - 'sudo -u ubuntu bash -lc "grep -qxF ''export PATH=\"/home/ubuntu/.local/bin:\$PATH\"'' /home/ubuntu/.bashrc || echo ''export PATH=\"/home/ubuntu/.local/bin:\$PATH\"'' >> /home/ubuntu/.bashrc"'
+                - '/home/ubuntu/.local/bin/uv --version'
+
+          # -------- Step 2: build the TRAIN venv on top of DLAMI -------------
+          # `--system-site-packages --python /opt/pytorch/bin/python` inherits
+          # DLAMI's CUDA-matched torch/flash-attn/bitsandbytes. Do NOT let pip
+          # upgrade torch in this venv — it will break CUDA alignment.
+          - action: aws:runShellScript
+            name: CreateTrainVenv
+            inputs:
+              runAsElevated: false
+              timeoutSeconds: 1800
+              workingDirectory: /home/ubuntu
+              runCommand:
+                - 'set -euo pipefail'
+                - 'export PATH="/home/ubuntu/.local/bin:$PATH"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/venv-train ] || uv venv --python /opt/pytorch/bin/python --system-site-packages ~/venv-train"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/LLaMA-Factory ] || git clone https://github.com/hiyouga/LLaMA-Factory.git ~/LLaMA-Factory; cd ~/LLaMA-Factory && git fetch --all --tags && git checkout {{ LlamaFactoryRef }}"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-train/bin/activate && cd ~/LLaMA-Factory && uv pip install -e .[metrics,deepspeed,bitsandbytes] --no-build-isolation"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-train/bin/activate && uv pip install unsloth"'
+                - 'sudo -u ubuntu bash -lc "source ~/venv-train/bin/activate && python -c ''import torch; print(f\"torch={torch.__version__} cuda={torch.cuda.is_available()}\")''"'
+
+          # -------- Step 3: build the SERVE venv (vLLM, isolated) ------------
+          - action: aws:runShellScript
+            name: CreateServeVenv
+            inputs:
+              runAsElevated: false
+              timeoutSeconds: 1800
+              workingDirectory: /home/ubuntu
+              runCommand:
+                - 'set -euo pipefail'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; [ -d ~/venv-serve ] || uv venv --python 3.11 ~/venv-serve"'
+                - 'sudo -u ubuntu bash -lc "set -euo pipefail; export PATH=/home/ubuntu/.local/bin:\$PATH; source ~/venv-serve/bin/activate && uv pip install vllm"'
+                - 'sudo -u ubuntu bash -lc "source ~/venv-serve/bin/activate && python -c ''import vllm; print(f\"vllm={vllm.__version__}\")''"'
+
+          # -------- Step 4: write a completion marker ------------------------
+          - action: aws:runShellScript
+            name: MarkComplete
+            inputs:
+              runAsElevated: true
+              timeoutSeconds: 60
+              runCommand:
+                - 'set -euo pipefail'
+                - 'date -u +"%Y-%m-%dT%H:%M:%SZ" > /var/lib/cloud/instance/training-stack-ready'
+                - 'chown ubuntu:ubuntu /var/lib/cloud/instance/training-stack-ready'
+                - 'echo "Training stack bootstrap complete."'
+
+  # Log group that SSM Run Command streams into.
+  BootstrapLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ssm/${ProjectName}-${Environment}-training-stack-bootstrap
+      RetentionInDays: 30
 
   # ---------------------------------------------------------------------------
   # Cost guardrail: monthly budget alert (optional).
@@ -705,6 +790,17 @@ Outputs:
     Description: Command to start interactive shell via SSM
     Value: !Sub |
       aws ssm start-session --target ${TrainingInstance} --region ${AWS::Region}
+
+  BootstrapDocumentName:
+    Description: Name of the SSM Document that installs the training stack
+    Value: !Ref TrainingStackBootstrapDoc
+    Export:
+      Name: !Sub ${AWS::StackName}-BootstrapDoc
+
+  BootstrapCmd:
+    Description: Command to run the training-stack bootstrap on the instance (post-deploy)
+    Value: !Sub |
+      aws ssm send-command --document-name ${TrainingStackBootstrapDoc} --targets Key=instanceids,Values=${TrainingInstance} --region ${AWS::Region}
 
   SsmTunnelCmd:
     Description: Command to tunnel webui(7860) + tensorboard(6006) + vllm(8000) to MacBook

@@ -23,6 +23,7 @@ it with new evidence.
 | [0004](./0004-remote-access-ssm-session-manager.md) | Accepted | Remote access: AWS SSM, zero public ports |
 | [0005](./0005-python-311-uv-dependency-groups.md) | Accepted | Python 3.11 pinned, uv with PEP 735 dependency groups |
 | [0006](./0006-alignment-method-sft-dpo-with-kto-optional.md) | Accepted | Alignment method: SFT + DPO (KTO path preserved) |
+| [0007](./0007-bootstrap-via-ssm-document.md) | Accepted | Training-stack bootstrap via SSM Document, not UserData |
 
 ## Conventions
 

@@ -39,6 +39,37 @@ AWS Budgets (optional)
   G5 instances often have a default quota of 0 — request a quota increase
   for `All G and VT Spot Instance Requests` (or On-Demand) ahead of time.
 
+## Two-phase startup
+
+Deployment is split into two phases so that fragile dependency installation
+doesn't happen in UserData (which is unretryable and opaque to CloudFormation):
+
+```
+Phase 1  make deploy      # CFN creates EC2 + networking + S3 + SSM document
+                          #   UserData only: CloudWatch agent, env vars, auto-shutdown
+                          #   ~5-8 minutes, very unlikely to fail
+
+Phase 2  make bootstrap   # SSM Run Command invokes the bootstrap document
+                          #   Installs uv, LLaMA-Factory (pinned commit), Unsloth, vLLM
+                          #   ~10-20 minutes, retryable, logs to CloudWatch
+```
+
+Phase 2 is **idempotent** — safe to re-run if a step fails (e.g. transient pip
+network error) or to update the LLaMA-Factory commit.
+
+### Why this split
+
+UserData has three fatal weaknesses for training-stack installs:
+
+1. Runs once on first boot; failures can't be replayed without recreating the instance
+2. Success/failure is invisible to CloudFormation (stack goes CREATE_COMPLETE either way)
+3. Debugging requires SSH'ing in and reading `/var/log/cloud-init-output.log`
+
+SSM Run Command gives us structured exit codes per step, CloudWatch Logs output,
+retryability, and control-plane visibility via `aws ssm list-command-invocations`.
+
+See [ADR-0007](../docs/adr/0007-bootstrap-via-ssm-document.md) for the full reasoning.
+
 ## Deploy
 
 ```bash
@@ -52,8 +83,27 @@ USE_SPOT=true BUDGET_EMAIL=you@example.com ./infrastructure/scripts/deploy.sh
 AWS_REGION=us-east-1 INSTANCE_TYPE=g6.2xlarge ./infrastructure/scripts/deploy.sh
 ```
 
-First deploy takes ~5 minutes for the stack, then another ~5-10 minutes for
-the EC2 user-data to install LLaMA-Factory, Unsloth, and vLLM.
+First deploy takes ~5-8 minutes for the stack. Once complete, run
+`make bootstrap` to install the training stack on the instance.
+
+## Bootstrap (phase 2)
+
+```bash
+make bootstrap                                   # use stack default (LLaMA-Factory main)
+LLAMA_FACTORY_REF=v0.9.1 make bootstrap          # pin a specific tag/commit
+WAIT=false make bootstrap                        # fire-and-forget (watch logs in CloudWatch)
+```
+
+First run takes ~10-20 minutes depending on pip download speed. Subsequent runs
+are much faster because uv caches and the venvs already exist — re-running
+is safe and used to upgrade LLaMA-Factory or recover from transient failures.
+
+Logs stream to CloudWatch:
+
+```bash
+aws logs tail /aws/ssm/emotion-companion-dev-training-stack-bootstrap \
+  --follow --region us-west-2
+```
 
 ## After the stack is up
 
@@ -67,10 +117,19 @@ This prompts for your Hugging Face token and (optionally) Weights & Biases
 key, and writes them as SecureString parameters that the EC2 instance role
 can read. Tokens never appear in shell history.
 
-### 2. Open the SSM tunnel
+### 2. Install the training stack (phase 2 bootstrap)
 
 ```bash
-./infrastructure/scripts/tunnel.sh
+make bootstrap
+```
+
+Install uv, LLaMA-Factory, Unsloth, and vLLM on the instance via SSM.
+~10-20 min. See [Bootstrap (phase 2)](#bootstrap-phase-2).
+
+### 3. Open the SSM tunnel
+
+```bash
+make tunnel
 ```
 
 Keep this terminal open. In another terminal / your browser:
@@ -81,14 +140,23 @@ Keep this terminal open. In another terminal / your browser:
 | TensorBoard | http://localhost:6006 |
 | vLLM (post-training) | http://localhost:8000 |
 
-### 3. Interactive shell
+### 4. Interactive shell
 
 ```bash
-./infrastructure/scripts/ssm-shell.sh
+make shell
 ```
 
 Then `sudo su - ubuntu` to switch to the user with the PyTorch env. Use
 `tmux new -s train` to keep training running across disconnects.
+
+Typical dev loop after bootstrap:
+
+```bash
+# on the EC2 instance, as ubuntu user
+source ~/venv-train/bin/activate
+cd ~/LLaMA-Factory
+llamafactory-cli webui   # → browser http://localhost:7860 via make tunnel
+```
 
 ## Customization
 
@@ -103,6 +171,7 @@ via environment variables to `deploy.sh`:
 | `AutoShutdownHours` | `AUTO_SHUTDOWN_HOURS` | `8` | 0 disables; checks GPU+CPU idle |
 | `BudgetLimitUSD` | `BUDGET_LIMIT_USD` | `200` | Monthly |
 | `BudgetNotificationEmail` | `BUDGET_EMAIL` | *(empty)* | Email for 80% / 100% alerts |
+| `LlamaFactoryRef` | *(not in deploy.sh; pass at `make bootstrap` via `LLAMA_FACTORY_REF`)* | `main` | Pin to a commit SHA or tag for reproducibility |
 
 ## Destroy
 

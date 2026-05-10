@@ -89,6 +89,9 @@ cfn-validate: ## Validate template syntax against AWS (requires credentials).
 deploy: ## Deploy/update the training-env stack. Honors env vars (see infrastructure/README.md).
 	./infrastructure/scripts/deploy.sh
 
+bootstrap: ## Install LLaMA-Factory + vLLM on the instance via SSM (post-deploy).
+	./infrastructure/scripts/bootstrap.sh
+
 destroy: ## Tear down the training-env stack (prompts for confirmation).
 	./infrastructure/scripts/destroy.sh
 

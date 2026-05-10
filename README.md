@@ -67,11 +67,25 @@ The EC2 venvs are built automatically by the CloudFormation user-data.
 ## Status
 
 - [x] Infrastructure: CloudFormation stack + SSM tunnel scripts
+- [x] Python environments: pyproject + uv dependency groups + Python 3.11 pin
+- [x] Dev tooling: Makefile, pre-commit, ruff, pyright, shellcheck, cfn-lint, CI
+- [x] Architecture Decision Records: see [docs/adr/](./docs/adr/)
 - [ ] Data pipeline: schema + dataset_info.json
 - [ ] SFT training config
 - [ ] DPO training config
 - [ ] Eval harness (LLM-as-judge + persona drift probes)
 - [ ] vLLM serving
+
+## Key design decisions
+
+See [docs/adr/](./docs/adr/) for the full index. Highlights:
+
+- [ADR-0001](./docs/adr/0001-base-model-qwen3-8b.md): Qwen3-8B base (Apache 2.0, 119 languages)
+- [ADR-0002](./docs/adr/0002-fine-tune-framework-llama-factory.md): LLaMA-Factory + Unsloth for SFT; vanilla TRL for DPO
+- [ADR-0003](./docs/adr/0003-training-hardware-ec2-g5-dlami.md): g5.2xlarge + DLAMI PyTorch 2.7
+- [ADR-0004](./docs/adr/0004-remote-access-ssm-session-manager.md): SSM Session Manager, zero public ports
+- [ADR-0005](./docs/adr/0005-python-311-uv-dependency-groups.md): Python 3.11 + uv + PEP 735 groups
+- [ADR-0006](./docs/adr/0006-alignment-method-sft-dpo-with-kto-optional.md): SFT → DPO, with KTO path preserved
 
 ## License
 

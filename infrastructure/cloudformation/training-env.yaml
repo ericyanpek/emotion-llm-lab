@@ -31,6 +31,7 @@ Metadata:
           default: Cost guardrails
         Parameters:
           - AutoShutdownHours
+          - EnableIdleAlarm
           - BudgetLimitUSD
           - BudgetNotificationEmail
 
@@ -93,12 +94,23 @@ Parameters:
 
   AutoShutdownHours:
     Type: Number
-    Default: 8
+    Default: 1
     MinValue: 0
     MaxValue: 72
     Description: >
-      Auto-shutdown the instance after N idle hours (0 disables). CloudWatch
-      alarm on low CPU triggers stop. Cheap insurance against forgotten instances.
+      Layer 1 auto-shutdown: on-instance cron stops the instance after N idle
+      hours (0 disables). Idle = GPU util <5% AND GPU memory <1GB AND no
+      active SSM sessions. Default 1h keeps PoC costs predictable; raise for
+      long overnight runs.
+
+  EnableIdleAlarm:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Layer 2 auto-shutdown: CloudWatch alarm stops the instance when
+      GPUUtilization < 5% for 60 minutes. Runs independently of the on-instance
+      cron so an OS-level hang doesn't leave the GPU burning money. ~$0.10/mo.
 
   BudgetLimitUSD:
     Type: Number
@@ -138,6 +150,7 @@ Conditions:
   UseSpot: !Equals [!Ref UseSpotInstance, 'true']
   HasBudgetEmail: !Not [!Equals [!Ref BudgetNotificationEmail, '']]
   # Note: AutoShutdownHours is consumed in the UserData bash directly; no CFN condition needed.
+  EnableIdleAlarmCond: !Equals [!Ref EnableIdleAlarm, 'true']
 
 # =============================================================================
 # RESOURCES
@@ -479,6 +492,9 @@ Resources:
       LaunchTemplateData:
         ImageId: !Ref LatestDlamiSsmParam
         InstanceType: !Ref InstanceType
+        # `shutdown -h` inside the instance (Layer 1 auto-shutdown cron) stops
+        # the instance rather than terminating it. Explicit > relying on default.
+        InstanceInitiatedShutdownBehavior: stop
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
         # IMDSv2 required (no v1 fallback). Matches OpenClaw hardening.
@@ -592,24 +608,50 @@ Resources:
               -a fetch-config -m ec2 -s \
               -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json || true
 
-            # Optional auto-shutdown cron based on GPU+CPU idleness.
+            # Layer 1: on-instance auto-shutdown cron.
+            # Idle = GPU util <5% AND GPU memory <1GB AND no active SSM session.
+            # The SSM session guard matters: if you're tunneled into the box
+            # looking at webui, we don't want to stop under your feet.
+            #
+            # NOTE: this whole block is rendered by CFN Fn::Sub. Any literal
+            # bash variable reference must use the CFN bang-escape form so CFN
+            # emits the literal rather than resolving it as a stack parameter.
+            # Shell variables inside the heredoc body all use the escaped form.
             if [ "${AutoShutdownHours}" -gt 0 ]; then
               cat >/usr/local/bin/auto-shutdown-check.sh <<'EOF'
             #!/bin/bash
-            # Stop instance if GPU util <5% AND CPU idle >95% for THRESHOLD_HOURS.
+            # Invoked every 15 minutes via /etc/cron.d/auto-shutdown.
+            # Accumulates idle time in /var/run/idle-since (tmpfs; lost on
+            # reboot — which is fine, a fresh boot restarts the clock).
+            set -u
             STATE=/var/run/idle-since
             THRESHOLD_HOURS=__HOURS__
-            GPU=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
-            CPU_IDLE=$(top -bn1 | awk '/Cpu/ {print $8}' | head -1)
-            if (( $(echo "$GPU < 5" | bc -l) )) && (( $(echo "$CPU_IDLE > 95" | bc -l) )); then
+
+            # GPU utilization (%). Uses nvidia-smi; missing driver → treat as 0.
+            GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
+            GPU_UTIL=${!GPU_UTIL// /}
+            # GPU memory used (MiB).
+            GPU_MEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
+            GPU_MEM=${!GPU_MEM// /}
+            # Active SSM port-forward or shell sessions (there's always 1+ if a
+            # developer is tunneled in). If ssm-agent isn't reporting, assume 0.
+            SSM_SESSIONS=$(pgrep -c -f "ssm-session-worker" 2>/dev/null || echo 0)
+
+            # All three must be true to count as idle.
+            if [ "${!GPU_UTIL:-0}" -lt 5 ] && [ "${!GPU_MEM:-0}" -lt 1024 ] && [ "${!SSM_SESSIONS:-0}" -eq 0 ]; then
               [ -f "$STATE" ] || date +%s > "$STATE"
               IDLE_HOURS=$(( ($(date +%s) - $(cat "$STATE")) / 3600 ))
+              logger -t auto-shutdown "idle ${!IDLE_HOURS}h (gpu=${!GPU_UTIL}% mem=${!GPU_MEM}MB ssm=${!SSM_SESSIONS})"
               if [ "$IDLE_HOURS" -ge "$THRESHOLD_HOURS" ]; then
-                logger "auto-shutdown: idle $IDLE_HOURS h, stopping"
-                shutdown -h +5 "Auto-shutdown after $IDLE_HOURS idle hours"
+                logger -t auto-shutdown "threshold reached, stopping in 5 min"
+                # `shutdown -h` triggers OS halt. With the launch template's
+                # InstanceInitiatedShutdownBehavior: stop, the instance stops
+                # (EBS retained) rather than terminates.
+                shutdown -h +5 "Auto-shutdown after ${!IDLE_HOURS} idle hours"
               fi
             else
               rm -f "$STATE"
+              logger -t auto-shutdown "active (gpu=${!GPU_UTIL}% mem=${!GPU_MEM}MB ssm=${!SSM_SESSIONS})"
             fi
             EOF
               sed -i "s/__HOURS__/${AutoShutdownHours}/" /usr/local/bin/auto-shutdown-check.sh
@@ -735,6 +777,40 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/ssm/${ProjectName}-${Environment}-training-stack-bootstrap
       RetentionInDays: 30
+
+  # ---------------------------------------------------------------------------
+  # Layer 2 auto-shutdown: CloudWatch alarm on low GPU utilization.
+  #
+  # Independent of the on-instance cron (Layer 1). If the OS hangs or the cron
+  # dies, this layer still stops the instance. The `arn:aws:automate:<region>:
+  # ec2:stop` ARN is a built-in CloudWatch alarm action (no Lambda needed).
+  #
+  # Metric source: CloudWatch agent's nvidia_gpu plugin (configured in UserData).
+  # Namespace: EmotionCompanion (to match our agent config).
+  # ---------------------------------------------------------------------------
+  IdleGpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableIdleAlarmCond
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-idle-gpu-stop
+      AlarmDescription: >
+        Stops the training instance when GPU utilization stays below 5% for
+        60 consecutive minutes. Cost guardrail against forgotten instances.
+      Namespace: EmotionCompanion
+      MetricName: nvidia_gpu_utilization_gpu
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref TrainingInstance
+      Statistic: Maximum            # max over the period; even occasional spikes keep us awake
+      Period: 300                   # 5 min
+      EvaluationPeriods: 12         # 12 × 5 min = 60 min
+      Threshold: 5
+      ComparisonOperator: LessThanThreshold
+      # Treat missing data as "notBreaching" so a CloudWatch-agent hiccup
+      # doesn't accidentally trigger a stop.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Sub arn:${AWS::Partition}:automate:${AWS::Region}:ec2:stop
 
   # ---------------------------------------------------------------------------
   # Cost guardrail: monthly budget alert (optional).

@@ -168,7 +168,8 @@ via environment variables to `deploy.sh`:
 | `InstanceType` | `INSTANCE_TYPE` | `g5.2xlarge` | `g5.xlarge` / `g6.2xlarge` / `g6e.2xlarge` also supported |
 | `UseSpotInstance` | `USE_SPOT` | `false` | Saves ~70%; tolerates interruption (LLaMA-Factory resumes) |
 | `RootVolumeSizeGB` | `ROOT_VOLUME_GB` | `500` | 200-2000 |
-| `AutoShutdownHours` | `AUTO_SHUTDOWN_HOURS` | `8` | 0 disables; checks GPU+CPU idle |
+| `AutoShutdownHours` | `AUTO_SHUTDOWN_HOURS` | `1` | Layer 1 cron: stop if GPU idle + no SSM session for N hours. 0 disables. |
+| `EnableIdleAlarm` | — | `true` | Layer 2: CloudWatch alarm on <5% GPU for 60 min. Independent of Layer 1. |
 | `BudgetLimitUSD` | `BUDGET_LIMIT_USD` | `200` | Monthly |
 | `BudgetNotificationEmail` | `BUDGET_EMAIL` | *(empty)* | Email for 80% / 100% alerts |
 | `LlamaFactoryRef` | *(not in deploy.sh; pass at `make bootstrap` via `LLAMA_FACTORY_REF`)* | `main` | Pin to a commit SHA or tag for reproducibility |
@@ -182,6 +183,58 @@ via environment variables to `deploy.sh`:
 **Note:** S3 buckets use `DeletionPolicy: Retain`. Empty and remove them
 manually if you want a full teardown — this is intentional so a slipped
 `cdk destroy` or `delete-stack` cannot wipe your training artifacts.
+
+## Auto-shutdown: two independent layers
+
+Both layers target the cost problem of a forgotten-but-idle GPU instance.
+They're designed to be independent so that if one fails (bad cron, driver
+hang, network partition), the other still protects you.
+
+### Layer 1 — on-instance cron (fine-grained)
+
+Runs every 15 minutes. Counts an instance as idle only if **all three** hold:
+
+- `nvidia-smi utilization.gpu` < 5%
+- `nvidia-smi memory.used` < 1 GB
+- No active SSM session (so you won't be stopped while tunneled in)
+
+After `AutoShutdownHours` of continuous idleness, `shutdown -h +5` triggers an
+OS halt. The launch template's `InstanceInitiatedShutdownBehavior: stop` means
+this stops (not terminates) the instance, preserving EBS.
+
+Default threshold is **1 hour**. View idleness history in CloudWatch:
+
+```
+/emotion-companion/dev/user-data   →  (grep for "auto-shutdown")
+```
+
+### Layer 2 — CloudWatch alarm (catches OS-level hangs)
+
+A `nvidia_gpu_utilization_gpu` metric alarm (published by the CloudWatch agent)
+fires when GPU util stays < 5% for **60 consecutive minutes**. The alarm's
+`AlarmAction` is the built-in `arn:aws:automate:us-east-1:ec2:stop` (no
+Lambda needed), which stops the instance from the AWS control plane side.
+
+This catches cases Layer 1 can't:
+
+- OS hangs or cron daemon dies
+- `nvidia-smi` starts returning stale data
+- The whole cron script was deleted by an errant command
+
+Cost: ~$0.10/month for the alarm. Toggle with `EnableIdleAlarm` parameter.
+
+### Starting the instance back up
+
+Either layer stops the instance — it doesn't terminate. Restart via:
+
+```bash
+aws ec2 start-instances --instance-ids <id> --region us-east-1
+# then re-tunnel
+make tunnel
+```
+
+`make bootstrap` doesn't need to re-run after a stop/start — venvs and
+LLaMA-Factory persist on EBS.
 
 ## Security posture
 

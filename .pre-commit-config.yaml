@@ -1,0 +1,65 @@
+# Pre-commit hooks — run before every commit to catch issues locally.
+#
+# Setup (once):
+#   make sync
+#   make pre-commit-install
+#
+# Run manually against entire repo:
+#   make pre-commit-run
+#
+# Skip all hooks for one commit (use sparingly):
+#   git commit --no-verify
+
+default_language_version:
+  python: python3.11
+
+repos:
+  # --- Whitespace / file hygiene --------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # CloudFormation uses non-standard YAML tags (!Sub, !Ref, ...).
+        # The hook can't parse them without help, so skip CFN files.
+        exclude: ^infrastructure/cloudformation/
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=5000"]
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # --- Ruff: format + lint Python -------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: ["--fix"]
+
+  # --- cfn-lint: CloudFormation template validation -------------------------
+  - repo: https://github.com/aws-cloudformation/cfn-lint
+    rev: v1.50.1
+    hooks:
+      - id: cfn-lint
+        files: ^infrastructure/cloudformation/.*\.(yaml|yml|json)$
+
+  # --- shellcheck: bash script linting --------------------------------------
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        # Match shell scripts under infrastructure/scripts and scripts/
+        files: ^(infrastructure/scripts|scripts)/.*\.sh$
+
+  # Note: secret scanning (gitleaks) is NOT configured as a pre-commit hook.
+  # The upstream gitleaks hook builds from Go source and requires network
+  # access to proxy.golang.org, which is blocked in some corporate envs.
+  # Instead:
+  #   - CI runs `gitleaks-action` on every PR (prebuilt binary, no network dep).
+  #   - Local environments with corporate git-defender or similar tools already
+  #     do secret scanning out-of-band.

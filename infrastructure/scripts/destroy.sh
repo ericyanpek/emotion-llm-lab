@@ -18,7 +18,7 @@ STACK_NAME="${STACK_NAME:-emotion-companion-dev}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 
 echo "About to delete stack: $STACK_NAME (region $AWS_REGION)"
-read -p "Are you sure? Type the stack name to confirm: " CONFIRM
+read -rp "Are you sure? Type the stack name to confirm: " CONFIRM
 if [ "$CONFIRM" != "$STACK_NAME" ]; then
   echo "Aborted."
   exit 1

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (Python + CFN + Shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install deps (local + eval + dev)
+        run: uv sync --group local --group eval --group dev --locked
+
+      # ---- Python ----
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      # Pyright in "warnings" mode — training libs aren't installed on CI, so
+      # missing imports are expected. This is a tripwire for real type errors.
+      - name: pyright (non-blocking on missing imports)
+        run: uv run pyright scripts configs || true
+        continue-on-error: true
+
+      # ---- CloudFormation ----
+      - name: cfn-lint
+        run: uv run --with cfn-lint cfn-lint infrastructure/cloudformation/*.yaml
+
+      # ---- Shell ----
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: "./infrastructure/scripts"
+          severity: warning
+
+      # ---- Secret scan ----
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -26,6 +26,7 @@ if ! command -v session-manager-plugin >/dev/null 2>&1; then
 fi
 
 # Look up the instance ID from CloudFormation outputs.
+# shellcheck disable=SC2016  # JMESPath literal below; intentionally not shell-expanded
 INSTANCE_ID=$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \

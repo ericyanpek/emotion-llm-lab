@@ -20,7 +20,7 @@ put_secret() {
   local path="/${PROJECT_NAME}/${ENVIRONMENT}/${name}"
 
   echo
-  read -s -p "$prompt (leave empty to skip): " value
+  read -rs -p "$prompt (leave empty to skip): " value
   echo
   if [ -z "$value" ]; then
     echo "  skipped $path"

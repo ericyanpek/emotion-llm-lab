@@ -553,17 +553,51 @@ Resources:
               -a fetch-config -m ec2 -s \
               -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json || true
 
-            # LLaMA-Factory install (as ubuntu user).
+            # ----------------------------------------------------------------
+            # Python environments (uv-managed, two separate venvs):
+            #   ~/venv-train  : LLaMA-Factory + training stack (imports DLAMI's
+            #                   pre-built torch/cuda; do NOT reinstall torch)
+            #   ~/venv-serve  : vLLM (conflicts with train env; separate venv)
+            # The DLAMI ships torch 2.7 at /opt/pytorch with CUDA/flash-attn/
+            # bitsandbytes aligned — any `pip install torch` wipes that out.
+            # ----------------------------------------------------------------
             sudo -u ubuntu bash <<'UBUNTU_EOF'
             set -euxo pipefail
             cd /home/ubuntu
-            source /opt/pytorch/bin/activate 2>/dev/null || source activate pytorch || true
-            git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git || true
-            cd LLaMA-Factory
-            pip install -e '.[torch,metrics,deepspeed,bitsandbytes]' --quiet || true
-            pip install unsloth --quiet || true
-            pip install vllm --quiet || true
-            echo "=== LLaMA-Factory install complete: $(date -u) ===" >> /home/ubuntu/bootstrap.log
+
+            # Install uv (fast, reproducible Python package manager).
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="/home/ubuntu/.local/bin:$PATH"
+            echo 'export PATH="/home/ubuntu/.local/bin:$PATH"' >> /home/ubuntu/.bashrc
+
+            # ----- TRAIN venv -----------------------------------------------
+            # Build on top of DLAMI's /opt/pytorch so we inherit the correctly
+            # compiled torch/cuda stack instead of reinstalling it.
+            uv venv --python /opt/pytorch/bin/python --system-site-packages ~/venv-train
+
+            source ~/venv-train/bin/activate
+            # Clone LLaMA-Factory pinned to the main branch; tag-pin in production.
+            git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git ~/LLaMA-Factory || true
+            cd ~/LLaMA-Factory
+
+            # Install LLaMA-Factory and the training-group extras from pyproject.
+            # `--no-deps` on torch would be ideal; simplest is to install LLaMA-Factory
+            # without the torch extra, relying on DLAMI's torch via system-site-packages.
+            uv pip install -e '.[metrics,deepspeed,bitsandbytes]' --no-build-isolation
+            uv pip install unsloth
+            deactivate
+
+            # ----- SERVE venv -----------------------------------------------
+            # vLLM has its own opinionated dependencies that conflict with train.
+            # Keep it isolated; pull HF token from SSM at runtime, not here.
+            uv venv --python 3.11 ~/venv-serve
+            source ~/venv-serve/bin/activate
+            uv pip install vllm
+            deactivate
+
+            echo "=== environments ready ===" >> /home/ubuntu/bootstrap.log
+            echo "  ~/venv-train  (source it for llamafactory-cli)"  >> /home/ubuntu/bootstrap.log
+            echo "  ~/venv-serve  (source it for vllm serve)"        >> /home/ubuntu/bootstrap.log
             UBUNTU_EOF
 
             # Optional auto-shutdown cron based on CPU idleness.

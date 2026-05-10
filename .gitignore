@@ -24,10 +24,12 @@ MANIFEST
 # ============ Virtual environments ============
 .env
 .venv
+.venv-*/
 env/
 venv/
 ENV/
-.python-version
+# Note: .python-version IS committed (pins Python version for contributors).
+# Note: uv.lock IS committed (dependency reproducibility).
 
 # ============ Jupyter ============
 .ipynb_checkpoints

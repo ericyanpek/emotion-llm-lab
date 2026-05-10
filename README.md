@@ -15,11 +15,34 @@ globally multilingual companion model. Pipeline: SFT (persona injection) → DPO
 | Serving | vLLM with multi-LoRA support |
 | Remote access | AWS SSM Session Manager (zero public ports) |
 | Artifact storage | S3 (data + LoRA adapters) |
+| Python / deps | Python 3.11 + `uv` + PEP 735 dependency groups |
+
+## Python environments
+
+Three environments, all pinned to **Python 3.11** (matches the DLAMI):
+
+| Environment | Host | Deps group | Purpose |
+|---|---|---|---|
+| `.venv` | Mac | `local`+`eval`+`dev` | data prep, eval harness, MLX local inference |
+| `~/venv-train` | EC2 | `train` (+ DLAMI torch) | LLaMA-Factory QLoRA training |
+| `~/venv-serve` | EC2 | `serve` | vLLM inference (separate venv — conflicts with train) |
+
+Mac setup:
+
+```bash
+uv sync --group local --group eval --group dev
+source .venv/bin/activate
+```
+
+The EC2 venvs are built automatically by the CloudFormation user-data.
 
 ## Repository layout
 
 ```
 .
+├── pyproject.toml           # Python 3.11 + deps groups: local / eval / train / serve / dev
+├── .python-version          # 3.11 (uv auto-detects)
+├── uv.lock                  # pinned dependency versions (commit this)
 ├── infrastructure/          # CloudFormation + ops scripts
 │   ├── cloudformation/
 │   │   └── training-env.yaml

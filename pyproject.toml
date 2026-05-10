@@ -1,0 +1,118 @@
+[project]
+name = "emotion-companion-finetune"
+version = "0.1.0"
+description = "PoC for fine-tuning Qwen3-8B into an emotionally expressive multilingual companion."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+# Keep the default install small — everything optional lives in dependency-groups below.
+# Rationale: Python 3.11 matches the DLAMI (PyTorch 2.7) environment on the training
+# EC2 instance. 3.12 works for local but some ML libs (e.g. bitsandbytes) still lag.
+# 3.13 is off-limits until the ML ecosystem catches up.
+dependencies = [
+    # Universal CLI-friendly utilities used by both local and remote scripts.
+    "pydantic>=2.8,<3",
+    "rich>=13.7",
+    "typer>=0.12",
+    "tenacity>=9",
+    "tqdm>=4.66",
+    "python-dotenv>=1.0",
+]
+
+# =============================================================================
+# Dependency groups (PEP 735)
+#
+# Layout:
+#   local   — Mac-side development: data prep, eval harness, HF/S3 clients
+#   eval    — LLM-as-judge + persona-drift probes (Mac or EC2, either)
+#   train   — LLaMA-Factory + QLoRA stack. Installed INTO the DLAMI venv on
+#             EC2 (do NOT reinstall torch; DLAMI owns the CUDA-matched build).
+#   serve   — vLLM inference environment. Own venv on EC2; conflicts with train.
+#   dev     — linters, formatters, test runners
+#
+# Install recipes:
+#   Mac:        uv sync --group local --group eval --group dev
+#   EC2 train:  (activate DLAMI venv first) uv pip install --group train
+#   EC2 serve:  uv venv --python 3.11 .venv-serve && uv pip install --group serve
+# =============================================================================
+[dependency-groups]
+
+# ---- Mac-side local dev (default on Mac) ----
+local = [
+    "datasets>=2.20",
+    "huggingface-hub>=0.24",
+    "pandas>=2.2",
+    "numpy>=1.26,<2.0",          # many ML libs still pin numpy<2
+    "jsonlines>=4",
+    "boto3>=1.34",
+    "ipykernel>=6.29",           # Jupyter kernel for notebooks
+    "matplotlib>=3.9",
+    "mlx-lm>=0.12; sys_platform == 'darwin'",   # Apple Silicon local inference
+]
+
+# ---- Eval (LLM-as-judge + drift probes) ----
+eval = [
+    "anthropic>=0.34",           # Claude as judge
+    "openai>=1.40",              # GPT-4o as judge / vLLM client (OpenAI-compatible API)
+    "sacrebleu>=2.4",            # optional BLEU for translation-style eval
+    "pyyaml>=6",
+]
+
+# ---- Training (EC2 with CUDA) ----
+# NOTE: torch is NOT listed. On EC2 the DLAMI ships a CUDA-matched torch build
+# at /opt/pytorch that we must reuse. Installing torch here would overwrite it
+# and break flash-attn / bitsandbytes / triton alignment.
+# LLaMA-Factory itself is installed from git on EC2 via user-data; this group
+# is for anything else the training scripts need.
+train = [
+    "accelerate>=0.33",
+    "peft>=0.12",
+    "trl>=0.10",
+    "transformers>=4.44",
+    "bitsandbytes>=0.43",
+    "datasets>=2.20",
+    "wandb>=0.17",
+    "tensorboard>=2.17",
+    "deepspeed>=0.14",
+    "sentencepiece>=0.2",
+    "einops>=0.8",
+]
+
+# ---- Serving (EC2, separate venv) ----
+serve = [
+    "vllm>=0.6",
+    "transformers>=4.44",
+    "openai>=1.40",              # for hitting the vLLM OpenAI-style endpoint
+]
+
+# ---- Developer tooling ----
+dev = [
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "pytest>=8",
+    "pre-commit>=3.8",
+]
+
+# =============================================================================
+# Tool configuration
+# =============================================================================
+[tool.uv]
+# Ensure we never silently mix environments.
+managed = true
+# Don't try to build this project as a package — it's a workspace of scripts.
+package = false
+# Reproducibility: fail instead of upgrading when lock is out of date in CI.
+# (Locally `uv sync` auto-updates; use `uv sync --locked` in CI.)
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
+ignore = ["E501"]   # line length handled by formatter
+
+[tool.pyright]
+pythonVersion = "3.11"
+include = ["scripts", "configs"]
+exclude = ["data", "**/__pycache__", ".venv*", "outputs", "saves"]
+reportMissingImports = "warning"   # training libs not present on Mac

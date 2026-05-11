@@ -21,7 +21,9 @@
 # Resolved from Hugging Face Hub on first run. Requires a valid HF token at
 # /emotion-companion/dev/hf-token in SSM Parameter Store, auto-loaded by the
 # DLAMI env or set via `export HF_TOKEN=$(aws ssm get-parameter ...)`.
-model_name_or_path: Qwen/Qwen3-8B-Instruct
+# NOTE: Qwen3 repo id is `Qwen/Qwen3-8B` — unlike Qwen2.5 there is NO
+# "-Instruct" suffix; the unified checkpoint includes instruction tuning.
+model_name_or_path: Qwen/Qwen3-8B
 trust_remote_code: true
 
 ### method ---------------------------------------------------------------------

@@ -17,7 +17,8 @@
 # =============================================================================
 
 ### model ----------------------------------------------------------------------
-model_name_or_path: Qwen/Qwen3-8B-Instruct
+# Qwen3 uses a unified checkpoint; no "-Instruct" suffix.
+model_name_or_path: Qwen/Qwen3-8B
 trust_remote_code: true
 
 ### method ---------------------------------------------------------------------

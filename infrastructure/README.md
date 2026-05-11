@@ -1,9 +1,8 @@
 # Infrastructure
 
 CloudFormation stack for a GPU training instance with **zero public ports**.
-All access goes through AWS SSM Session Manager — same security baseline as
-the [OpenClaw-on-Bedrock](https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock)
-reference architecture.
+All access goes through AWS SSM Session Manager: no SSH keys to rotate, no
+public endpoints, IAM-based authentication, full audit trail in CloudTrail.
 
 ## What gets deployed
 
@@ -238,7 +237,7 @@ LLaMA-Factory persist on EBS.
 
 ## Security posture
 
-Modeled on the OpenClaw reference; explicit choices:
+Explicit choices that make this stack Well-Architected from day one:
 
 | Control | Implementation |
 |---|---|

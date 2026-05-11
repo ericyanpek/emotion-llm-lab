@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Emotion Companion LLM fine-tune training environment.
   Provisions a GPU EC2 instance (g5.2xlarge + DLAMI) with zero public ports,
-  SSM-only access, encrypted EBS, an S3 artifact bucket, and SSM Parameter Store
-  entries for secrets. Modeled after the OpenClaw-on-Bedrock security baseline.
+  SSM-only access, encrypted EBS, an S3 artifact bucket, and SSM Parameter
+  Store entries for secrets.
 
 # =============================================================================
 # METADATA
@@ -187,7 +187,8 @@ Resources:
   #   - 53/UDP + 53/TCP: DNS resolution
   #   - 123/UDP: NTP (chrony) time sync
   # Access to local services like Gradio webui happens ONLY via SSM port
-  # forwarding, never via SG ingress. Matches the OpenClaw security baseline.
+  # forwarding, never via SG ingress. This is the whole point of the
+  # zero-inbound posture — public-port-free remote access via AWS control plane.
   # ---------------------------------------------------------------------------
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -444,7 +445,7 @@ Resources:
         InstanceInitiatedShutdownBehavior: stop
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
-        # IMDSv2 required (no v1 fallback). Matches OpenClaw hardening.
+        # IMDSv2 required (no v1 fallback) — blocks SSRF-style metadata theft.
         MetadataOptions:
           HttpTokens: required
           HttpEndpoint: enabled

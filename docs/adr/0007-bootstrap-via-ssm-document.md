@@ -86,4 +86,3 @@ Bad / watch-outs:
 
 - SSM Document docs: https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-ssm-docs.html
 - `AWS::SSM::Document` CFN: https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ssm-document.html
-- OpenClaw-on-Bedrock (inspiration for SSM-first posture): https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock

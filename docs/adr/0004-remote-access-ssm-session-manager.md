@@ -27,7 +27,8 @@ Use **AWS SSM Session Manager** for all remote access:
 - Port forwarding: `aws ssm start-session --document-name AWS-StartPortForwardingSession`
 - EC2 Security Group: **zero inbound rules**. Egress scoped to 443/80/53/123
 
-Adopted directly from the OpenClaw-on-Bedrock AWS sample's security baseline.
+This is AWS's recommended pattern for remote access without public ports, and
+has become the default posture for security-conscious EC2 workloads in 2026.
 
 ## Consequences
 
@@ -64,5 +65,4 @@ Bad / watch-outs:
 
 ## References
 
-- OpenClaw-on-Bedrock SSM pattern: https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock
 - AWS docs: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html

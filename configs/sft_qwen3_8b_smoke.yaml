@@ -1,0 +1,94 @@
+# =============================================================================
+# SFT smoke test — Qwen3-8B + QLoRA 4-bit + tiny (5-record) dataset
+#
+# Purpose: verify the end-to-end training loop works on the instance before
+# committing GPU time to a real run. Success = loss curve trends downward
+# over 10 steps and an adapter lands in saves/.
+#
+# NOT intended to produce a useful model — the data is 5 hand-written
+# samples covering Lily persona only. Use sft_qwen3_8b_v1.yaml for real runs.
+#
+# Invoke (on the EC2 instance, as ubuntu):
+#   source ~/venv-train/bin/activate
+#   cd ~/LLaMA-Factory
+#   llamafactory-cli train /path/to/this/file.yaml
+#
+# Or from the webui (http://localhost:7860 via `make tunnel`), import this
+# YAML via the "Load config" button.
+# =============================================================================
+
+### model ----------------------------------------------------------------------
+# Resolved from Hugging Face Hub on first run. Requires a valid HF token at
+# /emotion-companion/dev/hf-token in SSM Parameter Store, auto-loaded by the
+# DLAMI env or set via `export HF_TOKEN=$(aws ssm get-parameter ...)`.
+model_name_or_path: Qwen/Qwen3-8B-Instruct
+trust_remote_code: true
+
+### method ---------------------------------------------------------------------
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all                   # all linear layers; LLaMA-Factory resolves Qwen3's module names
+lora_rank: 16                      # smoke-level; v1 config uses 32-64
+lora_alpha: 32                     # convention: alpha = 2x rank
+lora_dropout: 0.05
+
+### quantization (QLoRA) -------------------------------------------------------
+# 4-bit NF4 weights + bf16 compute. Peak VRAM for Qwen3-8B ≈ 8 GB, leaving
+# plenty of headroom for DPO ref-free mode later.
+quantization_bit: 4
+quantization_method: bitsandbytes  # nf4 by default
+quantization_type: nf4
+double_quantization: true
+compute_dtype: bfloat16
+
+### dataset --------------------------------------------------------------------
+# Resolved via data/dataset_info.json (keys = dataset_id). The 5 hand-written
+# records under data/sft/emotion_sft_tiny.json. See schemas/sft_alpaca.schema.json
+# for the format contract.
+dataset: emotion_sft_tiny
+dataset_dir: data                  # relative to cwd (~/LLaMA-Factory usually);
+                                   # override with --dataset_dir if you run from elsewhere
+template: qwen                     # Qwen3 uses the qwen chat template
+cutoff_len: 2048                   # matches ADR-0003 smoke-friendly setting
+max_samples: 100                   # >= dataset size; no-op here
+overwrite_cache: true              # don't reuse cache from previous experiments
+preprocessing_num_workers: 2       # instance has 8 vCPU; no need to push it
+
+### output ---------------------------------------------------------------------
+output_dir: saves/sft/qwen3-8b-tiny-smoke
+overwrite_output_dir: true
+save_strategy: steps
+save_steps: 10                     # only save once at the end of smoke run
+save_total_limit: 1
+
+### training loop --------------------------------------------------------------
+# The smoke-test-defining parameter. For a full SFT run, replace max_steps with
+# num_train_epochs: 3 and remove max_steps (or set to -1).
+max_steps: 10
+
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4     # effective batch size 4
+learning_rate: 2.0e-4              # LoRA typical; ADR-0005 updated from earlier 5e-5 draft
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.0
+num_train_epochs: 1                # ignored when max_steps is set, but harmless
+gradient_checkpointing: true       # cheap safety for the 24 GB VRAM envelope
+bf16: true
+tf32: true
+
+### logging --------------------------------------------------------------------
+logging_dir: saves/sft/qwen3-8b-tiny-smoke/logs
+logging_steps: 1                   # 10 steps total, log every one
+report_to: tensorboard             # reachable at http://localhost:6006 via `make tunnel`
+run_name: qwen3-8b-tiny-smoke      # shows up in wandb/tensorboard
+
+### eval -----------------------------------------------------------------------
+# Deliberately disabled for smoke test — adds ~30 sec without value when the
+# dataset is 5 samples. Re-enable in v1 config.
+do_eval: false
+val_size: 0                        # no holdout split
+
+### reproducibility ------------------------------------------------------------
+seed: 42

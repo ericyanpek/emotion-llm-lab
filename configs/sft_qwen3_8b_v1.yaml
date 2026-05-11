@@ -1,0 +1,98 @@
+# =============================================================================
+# SFT v1 — Qwen3-8B + QLoRA 4-bit on the first real dataset batch
+#
+# This is the production-intent config. Copy from sft_qwen3_8b_smoke.yaml
+# once the smoke test is green; differences are called out below with
+# `### diff-from-smoke` markers so the evolution from smoke → v1 is auditable.
+#
+# Prerequisites:
+#   - smoke test (sft_qwen3_8b_smoke.yaml) has completed successfully
+#   - real SFT dataset registered in data/dataset_info.json, e.g. emotion_sft_en_v1
+#   - Hugging Face token present in SSM Parameter Store
+#
+# Invoke:
+#   source ~/venv-train/bin/activate
+#   cd ~/LLaMA-Factory
+#   llamafactory-cli train /path/to/sft_qwen3_8b_v1.yaml
+# =============================================================================
+
+### model ----------------------------------------------------------------------
+model_name_or_path: Qwen/Qwen3-8B-Instruct
+trust_remote_code: true
+
+### method ---------------------------------------------------------------------
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all
+### diff-from-smoke: rank 16 → 32; stronger persona injection capacity.
+# ADR-0005 suggested 32-64 for multilingual persona; start at 32 and bump
+# to 64 if persona drift is still visible after a v1 run.
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+
+### quantization (QLoRA) -------------------------------------------------------
+quantization_bit: 4
+quantization_method: bitsandbytes
+quantization_type: nf4
+double_quantization: true
+compute_dtype: bfloat16
+
+### dataset --------------------------------------------------------------------
+### diff-from-smoke: tiny set → first real batch.
+# When v1 actually lands, swap this for the real dataset_id. For multilingual
+# training later, list several IDs comma-separated and add:
+#   mix_strategy: interleave_under
+#   interleave_probs: 0.35,0.30,0.25,0.10
+dataset: emotion_sft_en_v1
+dataset_dir: data
+template: qwen
+### diff-from-smoke: 2048 → kept at 2048 for SFT; DPO config drops to 1024.
+cutoff_len: 2048
+### diff-from-smoke: cap at 3000 records in case the synth run overshoots.
+# Prevents surprise: if synth produces 15k records we don't silently train on
+# all of them and blow the budget.
+max_samples: 3000
+overwrite_cache: false             # reuse tokenized cache across runs for speed
+preprocessing_num_workers: 4
+
+### output ---------------------------------------------------------------------
+### diff-from-smoke: experiment name reflects data version so artifacts
+# under saves/ / S3 don't collide across iterations.
+output_dir: saves/sft/qwen3-8b-emotion-en-v1
+overwrite_output_dir: false        # explicit re-runs required
+save_strategy: epoch
+save_total_limit: 3                # keep last 3 epochs; older ones rotated out
+
+### training loop --------------------------------------------------------------
+### diff-from-smoke: max_steps removed, num_train_epochs takes over.
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8     # effective batch size 8
+learning_rate: 2.0e-4
+lr_scheduler_type: cosine
+warmup_ratio: 0.05                 # lower warmup for longer runs
+weight_decay: 0.0
+gradient_checkpointing: true
+bf16: true
+tf32: true
+
+### logging --------------------------------------------------------------------
+logging_dir: saves/sft/qwen3-8b-emotion-en-v1/logs
+logging_steps: 5
+report_to: tensorboard             # add 'wandb' here to dual-log once WANDB_API_KEY set
+run_name: qwen3-8b-emotion-en-v1
+
+### eval -----------------------------------------------------------------------
+### diff-from-smoke: evaluation ON, 5% holdout for training-time loss tracking.
+# Real capability eval (LLM-as-judge, drift probes) lives in a separate eval
+# pipeline and runs after training completes — not inside this trainer.
+do_eval: true
+val_size: 0.05
+eval_strategy: steps
+eval_steps: 50
+per_device_eval_batch_size: 2
+
+### reproducibility ------------------------------------------------------------
+seed: 42

@@ -1,0 +1,98 @@
+# =============================================================================
+# DPO v1 — Qwen3-8B + QLoRA 4-bit + first real preference dataset
+#
+# Builds on the SFT v1 adapter (sft_qwen3_8b_v1.yaml output) with pairwise
+# preference data from the synth pipeline. `### diff-from-smoke` comments
+# mark every intentional deviation from dpo_qwen3_8b_smoke.yaml so reviewers
+# can audit the experiment evolution without diff-ing two files.
+#
+# Prerequisites:
+#   - SFT v1 run completed; adapter at saves/sft/qwen3-8b-emotion-en-v1/
+#   - emotion_dpo_en_v1 registered in data/dataset_info.json with
+#     ranking: true and file_name pointing at the S3 location
+# =============================================================================
+
+### model ----------------------------------------------------------------------
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+
+### adapter starting point -----------------------------------------------------
+### diff-from-smoke: start from SFT v1 output, not SFT smoke.
+adapter_name_or_path: /home/ubuntu/emotion-llm-lab/saves/sft/qwen3-8b-emotion-en-v1
+
+### method ---------------------------------------------------------------------
+stage: dpo
+do_train: true
+finetuning_type: lora
+lora_target: all
+### diff-from-smoke: rank 16 → 32. Higher capacity for subtler preference signal.
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+
+### DPO hyperparameters --------------------------------------------------------
+pref_loss: sigmoid
+pref_beta: 0.1
+dpo_label_smoothing: 0.0
+
+### reference-free mode --------------------------------------------------------
+ref_model: null
+ref_model_quantization_bit: 4
+
+### quantization (QLoRA) -------------------------------------------------------
+quantization_bit: 4
+quantization_method: bitsandbytes
+quantization_type: nf4
+double_quantization: true
+
+### dataset --------------------------------------------------------------------
+### diff-from-smoke: tiny set → first real preference batch.
+# For multilingual DPO later, list several dataset IDs comma-separated and
+# use mix_strategy + interleave_probs (same as SFT v1 plan).
+dataset: emotion_dpo_en_v1
+dataset_dir: /home/ubuntu/emotion-llm-lab/data
+template: qwen
+cutoff_len: 1024
+### diff-from-smoke: cap at 2000 pairs. DPO is data-efficient — more isn't
+# always better, and overshoot can over-align toward the rejected avoidance.
+max_samples: 2000
+overwrite_cache: false
+preprocessing_num_workers: 4
+
+### output ---------------------------------------------------------------------
+output_dir: /home/ubuntu/emotion-llm-lab/saves/dpo/qwen3-8b-emotion-en-v1
+overwrite_output_dir: false
+save_strategy: epoch
+save_total_limit: 3
+
+### training loop --------------------------------------------------------------
+### diff-from-smoke: max_steps removed, num_train_epochs takes over.
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 5.0e-7
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+weight_decay: 0.0
+gradient_checkpointing: true
+bf16: true
+tf32: true
+
+### logging --------------------------------------------------------------------
+logging_dir: /home/ubuntu/emotion-llm-lab/saves/dpo/qwen3-8b-emotion-en-v1/logs
+logging_steps: 5
+report_to: tensorboard
+run_name: qwen3-8b-dpo-emotion-en-v1
+
+### eval -----------------------------------------------------------------------
+### diff-from-smoke: evaluation ON during training.
+# The metric that actually matters (persona-consistency, drift-probe pass
+# rate) still runs post-train in the eval harness, not here.
+do_eval: true
+val_size: 0.05
+eval_strategy: steps
+eval_steps: 50
+per_device_eval_batch_size: 2
+
+### reproducibility ------------------------------------------------------------
+seed: 42

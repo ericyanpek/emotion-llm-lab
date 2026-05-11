@@ -99,3 +99,7 @@ Thumbs.db
 
 # Commit message scratch file (used by fs_write → git commit -F pattern)
 .commit-msg
+
+# Temporary SSM payload files for one-shot commands
+.smoke-payload.json
+.ssm-*.json

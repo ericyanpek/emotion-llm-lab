@@ -1,0 +1,107 @@
+# =============================================================================
+# DPO smoke test — Qwen3-8B + QLoRA 4-bit on top of SFT adapter + 5 pair dataset
+#
+# Purpose: verify the preference-optimization loop runs end-to-end. Consumes
+# the LoRA adapter produced by sft_qwen3_8b_smoke.yaml (SFT stage) as a
+# starting point, then applies DPO against the 5 pairs in emotion_dpo_tiny.
+#
+# Success criteria (see configs/README.md):
+#   - SFT smoke adapter loads cleanly (not re-downloading base)
+#   - 10 training steps complete
+#   - rewards/accuracies > 0 (chosen beats rejected on most pairs)
+#   - DPO adapter lands under saves/dpo/qwen3-8b-emotion-tiny-smoke/
+#
+# Invoke (on EC2, as ubuntu):
+#   bash /home/ubuntu/emotion-llm-lab/scripts/run-dpo-smoke.sh
+# =============================================================================
+
+### model ----------------------------------------------------------------------
+# Same base as SFT; the SFT adapter is layered on top via adapter_name_or_path.
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+
+### adapter starting point -----------------------------------------------------
+# DPO is NOT trained from the raw pretrained model — it builds on the SFT
+# adapter that already learned the persona. Without this, DPO would have
+# nothing persona-shaped to "nudge" toward `chosen`. ADR-0006.
+adapter_name_or_path: /home/ubuntu/emotion-llm-lab/saves/sft/qwen3-8b-tiny-smoke
+
+### method ---------------------------------------------------------------------
+stage: dpo
+do_train: true
+finetuning_type: lora
+lora_target: all
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+### DPO-specific hyperparameters -----------------------------------------------
+pref_loss: sigmoid        # standard DPO; 'kto' swaps in KTO, 'ipo'/'simpo' available
+pref_beta: 0.1            # canonical DPO beta; higher = stronger constraint to SFT
+dpo_label_smoothing: 0.0  # optional cDPO-style regularization; off for smoke
+
+### Reference-free mode (A10G VRAM survival) -----------------------------------
+# With ref_model: null + adapter_name_or_path set, LLaMA-Factory uses the
+# frozen base model as the reference and only unfreezes the LoRA params.
+# Peak VRAM roughly halves vs loading a second 8B as the ref — this is the
+# whole reason Qwen3-8B fits in 24GB during DPO. ADR-0006.
+ref_model: null
+ref_model_quantization_bit: 4
+
+### quantization (QLoRA) -------------------------------------------------------
+# compute_dtype is NOT set — derived from bf16/fp16 flags (see SFT smoke).
+quantization_bit: 4
+quantization_method: bitsandbytes
+quantization_type: nf4
+double_quantization: true
+
+### dataset --------------------------------------------------------------------
+# emotion_dpo_tiny is registered in data/dataset_info.json with
+# `ranking: true`, which LLaMA-Factory requires for DPO.
+dataset: emotion_dpo_tiny
+dataset_dir: /home/ubuntu/emotion-llm-lab/data
+template: qwen
+# DPO processes both chosen+rejected on every step, doubling sequence memory
+# vs SFT. 1024 keeps us well inside the A10G envelope for the smoke run.
+cutoff_len: 1024
+max_samples: 100
+overwrite_cache: true
+preprocessing_num_workers: 2
+
+### output ---------------------------------------------------------------------
+output_dir: /home/ubuntu/emotion-llm-lab/saves/dpo/qwen3-8b-emotion-tiny-smoke
+overwrite_output_dir: true
+save_strategy: steps
+save_steps: 10
+save_total_limit: 1
+
+### training loop --------------------------------------------------------------
+max_steps: 10
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+# DPO uses a MUCH lower LR than SFT — preference optimization is a nudge, not
+# a re-training. Too high and the model collapses toward the chosen style
+# and loses capabilities learned during pretraining/SFT. ADR-0006.
+learning_rate: 5.0e-6
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.0
+num_train_epochs: 1
+gradient_checkpointing: true
+bf16: true
+tf32: true
+
+### logging --------------------------------------------------------------------
+logging_dir: /home/ubuntu/emotion-llm-lab/saves/dpo/qwen3-8b-emotion-tiny-smoke/logs
+logging_steps: 1
+report_to: tensorboard
+run_name: qwen3-8b-dpo-tiny-smoke
+
+### eval -----------------------------------------------------------------------
+# Off for smoke — 5 pairs can't be split. Real capability eval (reward-margin
+# per drift_probe, persona-consistency LLM-judge) runs separately post-train.
+do_eval: false
+val_size: 0
+
+### reproducibility ------------------------------------------------------------
+seed: 42

@@ -206,8 +206,10 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 │       ├── ssm-shell.sh      # SSM 交互式 shell
 │       └── destroy.sh        # 带确认的 delete-stack
 ├── configs/                  # LLaMA-Factory SFT / DPO YAML
-│   ├── sft_qwen3_8b_smoke.yaml  # 10 步烟雾测试，验证回路
-│   └── sft_qwen3_8b_v1.yaml     # 真训练模板，diff-from-smoke 注释标注
+│   ├── sft_qwen3_8b_smoke.yaml  # SFT 10 步烟雾测试
+│   ├── sft_qwen3_8b_v1.yaml     # SFT 真训练模板
+│   ├── dpo_qwen3_8b_smoke.yaml  # DPO 10 步烟雾测试（基于 SFT adapter）
+│   └── dpo_qwen3_8b_v1.yaml     # DPO 真训练模板
 ├── data/                     # 训练数据（tiny 样本提交仓库；真实规模走 S3）
 │   ├── dataset_info.json     # LLaMA-Factory 数据清单
 │   ├── sft/ dpo/             # Alpaca-style 样本文件
@@ -238,8 +240,10 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [x] 数据 schema 与 `dataset_info.json`：Alpaca-style SFT + DPO，5+5 条 tiny 样本，JSON Schema 验证通过
 - [x] 首份 persona 文档：Lily（英语版，含身份探针、边界规则、system prompt）
 - [x] SFT 训练配置：`sft_qwen3_8b_smoke.yaml`（10 步烟雾测试）+ `sft_qwen3_8b_v1.yaml`（真训练模板，字段差异逐行注释）
-- [ ] 首次 smoke 训练：在 EC2 上跑通 10 步，loss 曲线下降 + adapter 落盘
-- [ ] DPO 训练配置：reference-free 模式 + 多语种分桶评估
+- [x] 首次 SFT smoke 训练：10 步 loss 5.03 → 0.78，167MB LoRA adapter 落盘
+- [x] DPO 训练配置：`dpo_qwen3_8b_smoke.yaml`（基于 SFT adapter + reference-free）+ `dpo_qwen3_8b_v1.yaml`（真训练模板）
+- [ ] 首次 DPO smoke 训练：在 EC2 上跑通 10 步，rewards/margins 为正
+- [ ] 多语言 persona：Lily 中文版（`lily_warm_companion_zh.md`）
 - [ ] DPO 训练配置：reference-free 模式 + 多语种分桶评估
 - [ ] 评估管线：LLM-as-judge + persona drift probe + code-switching 检测
 - [ ] vLLM multi-LoRA serving + FastAPI 网关

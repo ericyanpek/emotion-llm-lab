@@ -37,7 +37,7 @@ quantization_bit: 4
 quantization_method: bitsandbytes
 quantization_type: nf4
 double_quantization: true
-compute_dtype: bfloat16
+# compute_dtype: NOT set — derived from bf16/fp16 flags (see smoke config).
 
 ### dataset --------------------------------------------------------------------
 ### diff-from-smoke: tiny set → first real batch.

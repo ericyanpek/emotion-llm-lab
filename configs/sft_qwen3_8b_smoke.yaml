@@ -36,19 +36,22 @@ lora_dropout: 0.05
 ### quantization (QLoRA) -------------------------------------------------------
 # 4-bit NF4 weights + bf16 compute. Peak VRAM for Qwen3-8B ≈ 8 GB, leaving
 # plenty of headroom for DPO ref-free mode later.
+# compute_dtype is NOT set here — LLaMA-Factory derives it from bf16/fp16 flags
+# below. Setting it as a string in YAML fails because the field is typed
+# torch.dtype and requires special deserialization.
 quantization_bit: 4
 quantization_method: bitsandbytes  # nf4 by default
 quantization_type: nf4
 double_quantization: true
-compute_dtype: bfloat16
 
 ### dataset --------------------------------------------------------------------
 # Resolved via data/dataset_info.json (keys = dataset_id). The 5 hand-written
 # records under data/sft/emotion_sft_tiny.json. See schemas/sft_alpaca.schema.json
 # for the format contract.
 dataset: emotion_sft_tiny
-dataset_dir: data                  # relative to cwd (~/LLaMA-Factory usually);
-                                   # override with --dataset_dir if you run from elsewhere
+# Absolute path so training works regardless of cwd. Points at the tiny
+# sample set committed under data/ in this repo.
+dataset_dir: /home/ubuntu/emotion-llm-lab/data
 template: qwen                     # Qwen3 uses the qwen chat template
 cutoff_len: 2048                   # matches ADR-0003 smoke-friendly setting
 max_samples: 100                   # >= dataset size; no-op here
@@ -56,7 +59,7 @@ overwrite_cache: true              # don't reuse cache from previous experiments
 preprocessing_num_workers: 2       # instance has 8 vCPU; no need to push it
 
 ### output ---------------------------------------------------------------------
-output_dir: saves/sft/qwen3-8b-tiny-smoke
+output_dir: /home/ubuntu/emotion-llm-lab/saves/sft/qwen3-8b-tiny-smoke
 overwrite_output_dir: true
 save_strategy: steps
 save_steps: 10                     # only save once at the end of smoke run
@@ -79,7 +82,7 @@ bf16: true
 tf32: true
 
 ### logging --------------------------------------------------------------------
-logging_dir: saves/sft/qwen3-8b-tiny-smoke/logs
+logging_dir: /home/ubuntu/emotion-llm-lab/saves/sft/qwen3-8b-tiny-smoke/logs
 logging_steps: 1                   # 10 steps total, log every one
 report_to: tensorboard             # reachable at http://localhost:6006 via `make tunnel`
 run_name: qwen3-8b-tiny-smoke      # shows up in wandb/tensorboard

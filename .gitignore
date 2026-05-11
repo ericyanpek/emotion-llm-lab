@@ -44,10 +44,13 @@ ENV/
 .DS_Store
 
 # ============ ML artifacts (large files — use S3 instead) ============
-# Raw data
+# Bulk data: produced, generated, or cached. Source of truth is S3.
 data/raw/**
 data/processed/**
 data/cache/**
+# Tiny committed sample sets under data/sft/ and data/dpo/ are kept in git
+# for smoke tests and onboarding. Real datasets (v1+) live in S3 and are
+# referenced from data/dataset_info.json via s3:// URLs.
 !data/**/.gitkeep
 
 # Model weights & checkpoints

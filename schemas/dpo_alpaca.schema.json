@@ -1,0 +1,70 @@
+{
+  "$id": "https://github.com/ericyanpek/emotion-llm-lab/schemas/dpo_alpaca.schema.json",
+  "title": "Emotion Companion DPO (Alpaca-style pairwise preference)",
+  "description": "One pairwise preference record for Direct Preference Optimization. Read by LLaMA-Factory via the 'alpaca' formatting with 'ranking: true' in data/dataset_info.json. The schema also carries 'chosen_label' / 'rejected_label' fields (+1 / -1) so the same file can be re-read as single-label KTO data without regenerating (see ADR-0006). Validate as JSON Schema Draft 2020-12.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": ["instruction", "chosen", "rejected", "system"],
+    "additionalProperties": false,
+    "properties": {
+      "instruction": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The user turn — typically a challenge to the persona, an AI-probe, or a scenario where the default LLM answer is misaligned."
+      },
+      "input": {
+        "type": "string",
+        "description": "Optional context; usually empty.",
+        "default": ""
+      },
+      "chosen": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The preferred reply. Embodies the persona in 'system', stays in character under pressure."
+      },
+      "rejected": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The dispreferred reply. Usually a generic AI-speak response ('As an AI language model...'), a 4th-wall break, excessive disclaimers, or a cold/clinical tone — things we want to push the model AWAY from."
+      },
+      "system": {
+        "type": "string",
+        "minLength": 20,
+        "description": "Full persona system prompt. Same convention as SFT."
+      },
+      "history": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "default": []
+      },
+      "chosen_label": {
+        "const": 1,
+        "description": "Provenance marker for KTO fallback — chosen is positive. LLaMA-Factory DPO ignores it."
+      },
+      "rejected_label": {
+        "const": -1,
+        "description": "Provenance marker for KTO fallback — rejected is negative."
+      },
+      "persona_id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]+$"
+      },
+      "language": {
+        "type": "string",
+        "pattern": "^[a-z]{2}$"
+      },
+      "drift_probe": {
+        "type": "string",
+        "description": "Optional tag identifying what persona-drift probe this pair exercises. Enables slicing DPO reward-margin reporting by probe type.",
+        "enum": ["identity", "emotion-mirror", "crisis", "code-switch", "boundary", "tone", "long-context", "other"]
+      }
+    }
+  }
+}

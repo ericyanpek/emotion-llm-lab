@@ -1,0 +1,31 @@
+{
+  "_comment": "LLaMA-Factory data manifest. Each key is a dataset_id that training YAML files reference via `dataset:`. Files are either local (relative to this directory) or S3 URLs (s3fs will read them). Keep entries grouped by stage (SFT then DPO) and sorted by language for easier diffs.",
+
+  "emotion_sft_tiny": {
+    "file_name": "sft/emotion_sft_tiny.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system",
+      "history": "history"
+    },
+    "split": "train"
+  },
+
+  "emotion_dpo_tiny": {
+    "file_name": "dpo/emotion_dpo_tiny.json",
+    "formatting": "alpaca",
+    "ranking": true,
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "system": "system",
+      "history": "history"
+    },
+    "split": "train"
+  }
+}

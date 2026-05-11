@@ -1,0 +1,55 @@
+{
+  "$id": "https://github.com/ericyanpek/emotion-llm-lab/schemas/sft_alpaca.schema.json",
+  "title": "Emotion Companion SFT (Alpaca style)",
+  "description": "One training record for supervised fine-tuning. Read by LLaMA-Factory via the 'alpaca' formatting with column mapping in data/dataset_info.json. The 'system' field is REQUIRED in this project (see ADR-0006: persona must be baked into weights, not only cued at inference). Validate as JSON Schema Draft 2020-12.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": ["instruction", "output", "system"],
+    "additionalProperties": false,
+    "properties": {
+      "instruction": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The user turn. What the user actually said."
+      },
+      "input": {
+        "type": "string",
+        "description": "Optional context or additional input. Usually empty for dialogue data; kept for Alpaca compat.",
+        "default": ""
+      },
+      "output": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The assistant's target reply. Must be in character for the persona declared in 'system'."
+      },
+      "system": {
+        "type": "string",
+        "minLength": 20,
+        "description": "Full persona system prompt. Source of truth is the markdown file under personas/; this field holds a concrete expansion (usually the full persona document content). Required — we never train without explicit persona."
+      },
+      "history": {
+        "type": "array",
+        "description": "Prior turns in the same conversation, oldest first. Each element is a [user, assistant] pair of strings.",
+        "items": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "default": []
+      },
+      "persona_id": {
+        "type": "string",
+        "description": "Optional provenance: which personas/*.md file generated this record. Useful for eval slicing; LLaMA-Factory ignores it.",
+        "pattern": "^[a-z][a-z0-9_-]+$"
+      },
+      "language": {
+        "type": "string",
+        "description": "Optional ISO 639-1 code. Used for per-language eval bucketing.",
+        "pattern": "^[a-z]{2}$"
+      }
+    }
+  }
+}

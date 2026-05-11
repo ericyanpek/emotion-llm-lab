@@ -206,7 +206,16 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 │       ├── ssm-shell.sh      # SSM 交互式 shell
 │       └── destroy.sh        # 带确认的 delete-stack
 ├── configs/                  # LLaMA-Factory SFT / DPO YAML（待落地）
-├── data/                     # 本地数据工作区（gitignored，正式走 S3）
+├── data/                     # 训练数据（tiny 样本提交仓库；真实规模走 S3）
+│   ├── dataset_info.json     # LLaMA-Factory 数据清单
+│   ├── sft/ dpo/             # Alpaca-style 样本文件
+│   └── README.md
+├── personas/                 # 人设文档（每语种一份）
+│   ├── _template.md
+│   └── lily_warm_companion_en.md
+├── schemas/                  # JSON Schema（与上游合成仓的数据契约）
+│   ├── sft_alpaca.schema.json
+│   └── dpo_alpaca.schema.json
 ├── scripts/                  # 数据前处理 / 评估脚本（待落地）
 └── docs/
     ├── adr/                  # 10 份 Architecture Decision Records
@@ -224,7 +233,8 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [x] 决策档案：10 份 ADR
 - [x] 实机验证：CFN 建栈 / SSM 连通 / uv + LLaMA-Factory + Unsloth + vLLM 全绿
 - [x] Webui 真机打通：Mac 浏览器通过 SSM 隧道访问 `localhost:7860` → HTTP 200
-- [ ] 数据 schema 与 `dataset_info.json`（对接 [ollama-gpu-host-aws](https://github.com/ericyanpek/ollama-gpu-host-aws) 合成产物）
+- [x] 数据 schema 与 `dataset_info.json`：Alpaca-style SFT + DPO，5+5 条 tiny 样本，JSON Schema 验证通过
+- [x] 首份 persona 文档：Lily（英语版，含身份探针、边界规则、system prompt）
 - [ ] SFT 训练配置：Qwen3-8B + QLoRA 4-bit + persona injection
 - [ ] DPO 训练配置：reference-free 模式 + 多语种分桶评估
 - [ ] 评估管线：LLM-as-judge + persona drift probe + code-switching 检测

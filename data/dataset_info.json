@@ -14,8 +14,36 @@
     "split": "train"
   },
 
+  "emotion_sft_tiny_zh": {
+    "file_name": "sft/emotion_sft_tiny_zh.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system",
+      "history": "history"
+    },
+    "split": "train"
+  },
+
   "emotion_dpo_tiny": {
     "file_name": "dpo/emotion_dpo_tiny.json",
+    "formatting": "alpaca",
+    "ranking": true,
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "system": "system",
+      "history": "history"
+    },
+    "split": "train"
+  },
+
+  "emotion_dpo_tiny_zh": {
+    "file_name": "dpo/emotion_dpo_tiny_zh.json",
     "formatting": "alpaca",
     "ranking": true,
     "columns": {

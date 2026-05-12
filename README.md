@@ -247,9 +247,9 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [x] SFT 训练配置：`sft_qwen3_8b_smoke.yaml`（10 步烟雾测试）+ `sft_qwen3_8b_v1.yaml`（真训练模板，字段差异逐行注释）
 - [x] 首次 SFT smoke 训练：10 步 loss 5.03 → 0.78，167MB LoRA adapter 落盘
 - [x] DPO 训练配置：`dpo_qwen3_8b_smoke.yaml`（基于 SFT adapter + reference-free）+ `dpo_qwen3_8b_v1.yaml`（真训练模板）
-- [ ] 首次 DPO smoke 训练：在 EC2 上跑通 10 步，rewards/margins 为正
-- [ ] 多语言 persona：Lily 中文版（`lily_warm_companion_zh.md`）
-- [ ] DPO 训练配置：reference-free 模式 + 多语种分桶评估
+- [x] 首次 DPO smoke 训练：10 步 `rewards/accuracies=1.0`、`margins` 3.43→6.32、167MB adapter 落盘
+- [x] 多语言 persona：Lily 中文版（`lily_warm_companion_zh.md`，本地化非翻译）+ 5 条 SFT / 5 对 DPO 中文 tiny 样本（通过 schema 验证）
+- [ ] DPO 多语种分桶评估（对接 Agent B 的 eval）
 - [x] 评估管线骨架：`scripts/eval_persona.py` + LLM-as-judge（Claude/OpenAI）+ drift probes + 4 维 rubric；`make eval-dry` 端到端可跑
 - [ ] 评估真机接入：vLLM serving → 用真实 adapter 跑 probes，产出首份质量报告
 - [ ] 多语种评估扩展：code-switching 检测 + 按语种 reward-margin 分桶

@@ -227,6 +227,7 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 │   └── eval/                 # probes / candidates / judges / rubric / report 模块
 └── docs/
     ├── adr/                  # 11 份 Architecture Decision Records
+    ├── learning/             # 学习规划 · 理论回补 & 前沿引导（Agent C）
     └── runbooks/
         └── first-deploy.md   # 首次部署手册 + 踩坑记录
 ```
@@ -253,6 +254,8 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [ ] 评估真机接入：vLLM serving → 用真实 adapter 跑 probes，产出首份质量报告
 - [ ] 多语种评估扩展：code-switching 检测 + 按语种 reward-margin 分桶
 - [ ] vLLM multi-LoRA serving + FastAPI 网关
+
+📚 学习资源：[`docs/learning/`](./docs/learning/) · 项目锚定的理论回补与前沿引导路径，和 ADR 双向索引。
 
 ---
 

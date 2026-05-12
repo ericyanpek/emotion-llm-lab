@@ -56,6 +56,18 @@ repos:
         # Match shell scripts under infrastructure/scripts and scripts/
         files: ^(infrastructure/scripts|scripts)/.*\.sh$
 
+  # --- ADR-0010 rule 1: no `set -x` combined with secret handling -----------
+  # Catches the runtime-leak pattern that led to the 2026-05-11 HF token
+  # incident. Complements (not replaces) CI gitleaks for committed secrets.
+  - repo: local
+    hooks:
+      - id: no-set-x-with-secrets
+        name: "ADR-0010: no tracing in secret-handling scripts"
+        entry: python3 scripts/check_no_set_x_with_secrets.py
+        language: system
+        types: [file]
+        files: '\.sh$|(^|/)run-.*'
+
   # Note: secret scanning (gitleaks) is NOT configured as a pre-commit hook.
   # The upstream gitleaks hook builds from Go source and requires network
   # access to proxy.golang.org, which is blocked in some corporate envs.

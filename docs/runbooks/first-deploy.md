@@ -200,3 +200,42 @@ open http://localhost:7860
   etc. are now too new. The SSM Document re-pins them immediately after
   the unsloth install; keep that pin list synced with the bounds in that
   misc.py file on every `llama_factory_ref` bump.
+
+
+## Secrets handling
+
+The SFT smoke run on 2026-05-11 leaked a Hugging Face token through a
+combination of `set -x` tracing and an `$(aws ssm get-parameter ...)` that
+evaluated in the wrong shell scope, ending up in `/tmp/smoke.log`,
+`/home/ubuntu/run-smoke.sh` on disk, and the `/emotion-companion/dev/ssm-agent`
+CloudWatch Logs group. The token was revoked and rotated the same day.
+
+[ADR-0010](../adr/0010-secrets-never-baked-into-scripts.md) codifies three
+rules to prevent a recurrence. The minimum you need to remember:
+
+- **Never use `set -x`** in any script that touches a secret. Our runners
+  use `set -euo pipefail` and add `set -x` / `set +x` around specific
+  blocks only when actively debugging
+- **Never embed `$(aws ssm get-parameter ...)` inside a heredoc** that a
+  parent shell constructs — the substitution runs in the parent, baking
+  the secret into the child script literally. Commit the runner and
+  trigger it instead; see `scripts/run-smoke.sh` for the canonical pattern
+- **Secrets live only in environment variables while a process runs** —
+  never in files you write, command-line args, or stdout
+
+### If a secret leaks
+
+1. **Revoke first, clean up second.** In HF → Settings → Tokens → Invalidate
+   the suspect token. AWS keys → IAM console → Deactivate. The CloudWatch
+   traces become harmless once the token is dead
+2. Rotate: create a fresh token, `make secrets`, restart whatever needs it
+3. Delete affected CloudWatch log streams:
+   ```bash
+   aws logs delete-log-stream --log-group-name <group> --log-stream-name <stream>
+   ```
+4. On the instance, truncate `/var/log/amazon/ssm/amazon-ssm-agent.log`,
+   clear bash history (`rm ~/.bash_history`), and remove any `/tmp/*.log`
+   or orchestration JSON that captured the secret
+5. Note: the `grep hf_xxx` commands used to hunt for leaks themselves get
+   logged by sudo/journald. That's fine — they only contain the search
+   substring, not the full token, and the token is now dead

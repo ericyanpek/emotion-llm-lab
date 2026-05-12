@@ -263,6 +263,7 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 | [0007](./docs/adr/0007-bootstrap-via-ssm-document.md) | 训练栈安装走 SSM Document，非 UserData | Accepted |
 | [0008](./docs/adr/0008-train-venv-self-contained-torch.md) | Train venv 自建 torch 栈（不复用 DLAMI） | Accepted |
 | [0009](./docs/adr/0009-unsloth-pins-torch-version.md) | Unsloth 决定 torch 版本（2.10.0+cu128 精确钉） | Accepted |
+| [0010](./docs/adr/0010-secrets-never-baked-into-scripts.md) | Secrets 仅通过环境变量，绝不 bake 进脚本 | Accepted |
 
 ---
 

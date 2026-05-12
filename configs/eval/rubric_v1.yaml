@@ -1,0 +1,21 @@
+# Persona rubric v1 — weights and penalty config for scripts/eval_persona.py.
+#
+# Dimensions map 1:1 to persona document sections (see personas/_template.md).
+# Scores are 1-5 ints from the judge; aggregation is a weighted mean.
+#
+# `hard_reject_penalty` is applied to the probe-type's PRIMARY dimension when
+# one of a probe's `hard_rejects` substrings appears in the candidate reply.
+# See scripts/eval/rubric.py PROBE_PRIMARY_DIMENSIONS for the mapping.
+#
+# Tuning philosophy: start uniform. Only raise a weight if you have data showing
+# the dimension is systematically drifting and other dimensions compensate.
+
+version: v1
+
+weights:
+  voice:              1.0
+  emotional_register: 1.0
+  identity:           1.0
+  boundaries:         1.0
+
+hard_reject_penalty: 2.0

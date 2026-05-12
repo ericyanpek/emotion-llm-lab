@@ -27,6 +27,7 @@ it with new evidence.
 | [0008](./0008-train-venv-self-contained-torch.md) | Accepted | Train venv carries its own torch stack (partially supersedes 0005) |
 | [0009](./0009-unsloth-pins-torch-version.md) | Accepted | Unsloth dictates the torch version (2.10.0+cu128) |
 | [0010](./0010-secrets-never-baked-into-scripts.md) | Accepted | Secrets pass through env vars only, never baked into scripts |
+| [0011](./0011-eval-pipeline-llm-as-judge-plus-drift-probes.md) | Accepted | Eval pipeline: 4-dimension rubric + LLM-as-judge + deterministic drift-probe guardrails |
 
 ## Conventions
 

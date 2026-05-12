@@ -11,7 +11,7 @@ repo 消费语料**，形成可重复的实验闭环。
 
 | 维度 | 选择 |
 |---|---|
-| 底座模型 | **Qwen3-8B-Instruct**（Apache 2.0，119 种语言原生覆盖） |
+| 底座模型 | **Qwen3-8B**（Apache 2.0，119 种语言原生覆盖） |
 | 微调方法 | **QLoRA 4-bit** + **SFT → DPO** 两阶段对齐 |
 | 框架 | LLaMA-Factory（训练） + Unsloth（加速后端） + vLLM（推理服务） |
 | 训练硬件 | Amazon EC2 `g5.2xlarge`（1× A10G 24 GB），On-Demand 或 Spot |
@@ -205,14 +205,16 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 │       ├── set-secrets.sh    # 交互式写入 SSM Parameter Store SecureString
 │       ├── ssm-shell.sh      # SSM 交互式 shell
 │       └── destroy.sh        # 带确认的 delete-stack
-├── configs/                  # LLaMA-Factory SFT / DPO YAML
+├── configs/                  # LLaMA-Factory SFT / DPO YAML + 评估 rubric
 │   ├── sft_qwen3_8b_smoke.yaml  # SFT 10 步烟雾测试
 │   ├── sft_qwen3_8b_v1.yaml     # SFT 真训练模板
 │   ├── dpo_qwen3_8b_smoke.yaml  # DPO 10 步烟雾测试（基于 SFT adapter）
-│   └── dpo_qwen3_8b_v1.yaml     # DPO 真训练模板
+│   ├── dpo_qwen3_8b_v1.yaml     # DPO 真训练模板
+│   └── eval/rubric_v1.yaml      # 评估权重 + hard-reject penalty
 ├── data/                     # 训练数据（tiny 样本提交仓库；真实规模走 S3）
 │   ├── dataset_info.json     # LLaMA-Factory 数据清单
 │   ├── sft/ dpo/             # Alpaca-style 样本文件
+│   ├── eval/probes_v1.jsonl  # drift probe 种子集
 │   └── README.md
 ├── personas/                 # 人设文档（每语种一份）
 │   ├── _template.md
@@ -220,9 +222,11 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 ├── schemas/                  # JSON Schema（与上游合成仓的数据契约）
 │   ├── sft_alpaca.schema.json
 │   └── dpo_alpaca.schema.json
-├── scripts/                  # 数据前处理 / 评估脚本（待落地）
+├── scripts/                  # 数据前处理 / 评估脚本
+│   ├── eval_persona.py       # typer CLI：persona eval with LLM-as-judge + drift probes
+│   └── eval/                 # probes / candidates / judges / rubric / report 模块
 └── docs/
-    ├── adr/                  # 10 份 Architecture Decision Records
+    ├── adr/                  # 11 份 Architecture Decision Records
     └── runbooks/
         └── first-deploy.md   # 首次部署手册 + 踩坑记录
 ```
@@ -245,7 +249,9 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [ ] 首次 DPO smoke 训练：在 EC2 上跑通 10 步，rewards/margins 为正
 - [ ] 多语言 persona：Lily 中文版（`lily_warm_companion_zh.md`）
 - [ ] DPO 训练配置：reference-free 模式 + 多语种分桶评估
-- [ ] 评估管线：LLM-as-judge + persona drift probe + code-switching 检测
+- [x] 评估管线骨架：`scripts/eval_persona.py` + LLM-as-judge（Claude/OpenAI）+ drift probes + 4 维 rubric；`make eval-dry` 端到端可跑
+- [ ] 评估真机接入：vLLM serving → 用真实 adapter 跑 probes，产出首份质量报告
+- [ ] 多语种评估扩展：code-switching 检测 + 按语种 reward-margin 分桶
 - [ ] vLLM multi-LoRA serving + FastAPI 网关
 
 ---
@@ -264,6 +270,7 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 | [0008](./docs/adr/0008-train-venv-self-contained-torch.md) | Train venv 自建 torch 栈（不复用 DLAMI） | Accepted |
 | [0009](./docs/adr/0009-unsloth-pins-torch-version.md) | Unsloth 决定 torch 版本（2.10.0+cu128 精确钉） | Accepted |
 | [0010](./docs/adr/0010-secrets-never-baked-into-scripts.md) | Secrets 仅通过环境变量，绝不 bake 进脚本 | Accepted |
+| [0011](./docs/adr/0011-eval-pipeline-llm-as-judge-plus-drift-probes.md) | 评估管线：4 维 rubric + LLM-as-judge + 确定性 drift-probe 护栏 | Accepted |
 
 ---
 

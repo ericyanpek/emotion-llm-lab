@@ -7,7 +7,8 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 .PHONY: help sync sync-all fmt lint lint-py lint-cfn lint-sh typecheck \
         cfn-validate deploy destroy tunnel shell secrets \
-        pre-commit-install pre-commit-run clean
+        pre-commit-install pre-commit-run clean \
+        eval eval-dry
 
 # ---- Locate tools ----------------------------------------------------------
 # Prefer the .venv-local install; fall back to user site.
@@ -106,6 +107,25 @@ shell: ## Interactive SSM shell on the training instance.
 
 secrets: ## Set HF / Wandb tokens in SSM Parameter Store (interactive prompt).
 	./infrastructure/scripts/set-secrets.sh
+
+# ---- Eval ------------------------------------------------------------------
+# Persona drift + LLM-as-judge pipeline. See scripts/eval/README.md.
+EVAL_PROBES  ?= data/eval/probes_v1.jsonl
+EVAL_RUBRIC  ?= configs/eval/rubric_v1.yaml
+EVAL_OUT     ?= outputs/eval
+
+eval-dry: ## Run the eval pipeline end-to-end with stub backends (no API keys, no GPU).
+	$(UV) run python scripts/eval_persona.py run \
+		--probes $(EVAL_PROBES) \
+		--rubric $(EVAL_RUBRIC) \
+		--out    $(EVAL_OUT) \
+		--candidate-backend stub \
+		--judge-backend     stub \
+		--dry-run
+
+eval: ## Run eval against a live candidate (see scripts/eval/README.md for flags).
+	@echo "Real eval needs explicit flags; copy-paste the example from scripts/eval/README.md."
+	@echo "For a quick sanity check, run: make eval-dry"
 
 # ---- Housekeeping ----------------------------------------------------------
 clean: ## Remove Python caches, build artifacts, and ruff/pyright state.

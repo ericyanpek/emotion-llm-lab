@@ -55,6 +55,8 @@ eval = [
     "openai>=1.40",              # GPT-4o as judge / vLLM client (OpenAI-compatible API)
     "sacrebleu>=2.4",            # optional BLEU for translation-style eval
     "pyyaml>=6",
+    "jsonschema>=4",             # probe schema validation (scripts/eval/probes.py)
+    "pytest>=8",                 # unit tests for the eval pipeline (scripts/eval/tests/)
 ]
 
 # ---- Training (EC2 with CUDA) ----

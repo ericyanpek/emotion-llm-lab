@@ -251,6 +251,8 @@ make destroy   # 保留 S3 artifacts，其他资源全部清理
 - [x] 多语言 persona：Lily 中文版（`lily_warm_companion_zh.md`，本地化非翻译）+ 5 条 SFT / 5 对 DPO 中文 tiny 样本（通过 schema 验证）
 - [ ] DPO 多语种分桶评估（对接 Agent B 的 eval）
 - [x] 评估管线骨架：`scripts/eval_persona.py` + LLM-as-judge（Claude/OpenAI）+ drift probes + 4 维 rubric；`make eval-dry` 端到端可跑
+- [x] 评估管线工具：`make validate-probes`（Schema 校验）+ `calibrate` 子命令（judge 可信度校准）
+- [x] 评估管线单测：46 tests 纯 Python，0.12s 完成；`make test-eval` 一键跑
 - [ ] 评估真机接入：vLLM serving → 用真实 adapter 跑 probes，产出首份质量报告
 - [ ] 多语种评估扩展：code-switching 检测 + 按语种 reward-margin 分桶
 - [ ] vLLM multi-LoRA serving + FastAPI 网关

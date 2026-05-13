@@ -38,6 +38,13 @@ jobs:
       - name: ruff check
         run: uv run ruff check .
 
+      # ---- Eval unit tests ----
+      # Fast (~0.12s) pure-Python tests that pin the eval pipeline contracts:
+      # rubric dimensions, probe schema ↔ DPO drift_probe enum sync, stub
+      # heuristics. See scripts/eval/tests/. Added per Agent B handoff.
+      - name: eval unit tests
+        run: uv run pytest scripts/eval/tests/ -q
+
       # Pyright in "warnings" mode — training libs aren't installed on CI, so
       # missing imports are expected. This is a tripwire for real type errors.
       - name: pyright (non-blocking on missing imports)

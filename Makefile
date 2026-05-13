@@ -8,7 +8,7 @@ SHELL := /bin/bash
 .PHONY: help sync sync-all fmt lint lint-py lint-cfn lint-sh typecheck \
         cfn-validate deploy destroy tunnel shell secrets \
         pre-commit-install pre-commit-run clean \
-        eval eval-dry
+        eval eval-dry test-eval validate-probes
 
 # ---- Locate tools ----------------------------------------------------------
 # Prefer the .venv-local install; fall back to user site.
@@ -126,6 +126,12 @@ eval-dry: ## Run the eval pipeline end-to-end with stub backends (no API keys, n
 eval: ## Run eval against a live candidate (see scripts/eval/README.md for flags).
 	@echo "Real eval needs explicit flags; copy-paste the example from scripts/eval/README.md."
 	@echo "For a quick sanity check, run: make eval-dry"
+
+test-eval: ## Run eval unit tests (fast, no network, no GPU).
+	$(UV) run pytest scripts/eval/tests/ -q
+
+validate-probes: ## Validate data/eval/probes_v1.jsonl against its JSON Schema.
+	$(UV) run python scripts/eval_persona.py validate --probes $(EVAL_PROBES)
 
 # ---- Housekeeping ----------------------------------------------------------
 clean: ## Remove Python caches, build artifacts, and ruff/pyright state.

@@ -1,0 +1,75 @@
+{
+  "$id": "probe.schema.json",
+  "title": "Emotion Companion eval probe (JSONL)",
+  "description": "One drift-probe per line. Consumed by scripts/eval/probes.py via pydantic; this schema mirrors that model so the JSONL can also be validated with any Draft-2020-12 JSON Schema tool (pre-commit, CI, external tooling). The probe_type enum MUST stay in sync with the drift_probe enum in schemas/dpo_alpaca.schema.json — a probe and its remediating DPO pair share the tag so they are cross-referenceable after a regression.",
+  "type": "object",
+  "required": [
+    "probe_id",
+    "probe_type",
+    "persona_id",
+    "language",
+    "instruction"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "probe_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]+$",
+      "description": "Stable slug used as the output key and in reports. Lowercase with hyphens/underscores, e.g. 'lily-id-01'."
+    },
+    "probe_type": {
+      "type": "string",
+      "enum": [
+        "identity",
+        "emotion-mirror",
+        "crisis",
+        "code-switch",
+        "boundary",
+        "tone",
+        "long-context",
+        "other"
+      ],
+      "description": "Failure mode this probe exercises. Same vocabulary as schemas/dpo_alpaca.schema.json drift_probe."
+    },
+    "persona_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]+$",
+      "description": "Matches personas/<persona_id>_<language>.md."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}$",
+      "description": "ISO 639-1 two-letter code."
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The user turn sent to the candidate model."
+    },
+    "history": {
+      "type": "array",
+      "description": "Prior turns, oldest first. Each element is a [user, assistant] pair of strings. Same shape as SFT/DPO records.",
+      "default": [],
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "string" }
+      }
+    },
+    "hard_rejects": {
+      "type": "array",
+      "description": "Case-insensitive substrings that, if present in the candidate reply, trigger a deterministic penalty on the primary dimension for this probe_type. See scripts/eval/rubric.py PROBE_PRIMARY_DIMENSIONS.",
+      "default": [],
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-only explanation of what failure mode this probe exercises. Ignored by the pipeline.",
+      "default": ""
+    }
+  }
+}

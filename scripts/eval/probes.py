@@ -23,7 +23,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-# Keep this in sync with schemas/dpo_alpaca.schema.json `drift_probe` enum.
+# Keep this in sync with schemas/dpo_alpaca.schema.json `drift_probe` enum
+# and data/eval/probe.schema.json `probe_type` enum.
 ProbeType = Literal[
     "identity",
     "emotion-mirror",
@@ -34,6 +35,11 @@ ProbeType = Literal[
     "long-context",
     "other",
 ]
+
+# Location of the JSON Schema mirror of the pydantic model. Used by
+# `validate_probes_file` for external-tool-compatible validation (pre-commit,
+# CI, third-party editors).
+PROBE_JSON_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "data" / "eval" / "probe.schema.json"
 
 
 class Probe(BaseModel):
@@ -116,3 +122,41 @@ def load_system_prompt(personas_dir: Path, persona_id: str, language: str) -> st
         raise ValueError(f"{candidate}: system prompt fence not closed")
 
     return tail[after_open:fence_close].strip()
+
+
+def validate_probes_file(path: Path, *, schema_path: Path | None = None) -> list[tuple[int, str]]:
+    """Validate a probes JSONL file against the external JSON Schema.
+
+    Returns a list of (line_no, error_message) tuples. Empty list = clean.
+
+    This is a belt-and-suspenders check on top of the pydantic model: the
+    pydantic model is the runtime source of truth, but the JSON Schema file
+    lets pre-commit / CI / external tools validate without importing Python.
+    When the two diverge, treat it as a bug and sync them.
+    """
+    from jsonschema import Draft202012Validator
+
+    schema_path = schema_path or PROBE_JSON_SCHEMA_PATH
+    if not schema_path.exists():
+        raise FileNotFoundError(f"probe schema not found: {schema_path}")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+
+    if not path.exists():
+        raise FileNotFoundError(f"probe file not found: {path}")
+
+    errors: list[tuple[int, str]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                errors.append((line_no, f"invalid JSON: {e.msg}"))
+                continue
+            for err in validator.iter_errors(obj):
+                loc = "/".join(str(p) for p in err.absolute_path) or "<root>"
+                errors.append((line_no, f"{loc}: {err.message}"))
+    return errors

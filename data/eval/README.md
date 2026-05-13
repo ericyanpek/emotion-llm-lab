@@ -57,3 +57,38 @@ Validation happens at load time via pydantic; malformed lines fail loudly.
 When a breaking probe-set change happens (removing probes, renaming ids, changing
 semantics of a probe_type), bump to `probes_v2.jsonl` — never rewrite history in
 `probes_v1.jsonl`. Otherwise reports from old runs become uncomparable to new ones.
+
+
+## Schema validation
+
+`probe.schema.json` is a Draft 2020-12 JSON Schema mirror of the `Probe`
+pydantic model in `scripts/eval/probes.py`. Two ways to validate:
+
+```bash
+# via the CLI (runs jsonschema under the hood)
+uv run python scripts/eval_persona.py validate --probes data/eval/probes_v1.jsonl
+
+# or from any external tool that speaks Draft 2020-12
+```
+
+When the pydantic model changes, update the schema too — the `ProbeType`
+Literal enum and the schema's `probe_type.enum` must stay in lock-step, and
+there's a unit test that enforces this.
+
+## Calibration (`calibrate` subcommand)
+
+Before trusting the judge's scores, sanity-check that it reliably prefers
+`chosen` over `rejected` on our committed DPO pairs in `../dpo/*.json`:
+
+```bash
+uv run python scripts/eval_persona.py calibrate \
+    --dpo data/dpo/emotion_dpo_tiny.json \
+    --dpo data/dpo/emotion_dpo_tiny_zh.json \
+    --judge-backend anthropic
+```
+
+Outputs a `pairs.jsonl` + `summary.json` + `summary.md` under
+`outputs/eval/calibration/<run_id>/`. The summary reports agree / tie /
+disagree rates overall and sliced by `language` and `drift_probe`. Target
+≥ 90% agree rate on human-curated DPO data; anything lower points at the
+judge, the rubric, or the DPO labeling itself.

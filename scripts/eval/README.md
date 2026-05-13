@@ -21,7 +21,26 @@ uv run python scripts/eval_persona.py run \
     --judge-backend      anthropic
 ```
 
-## Pieces
+## Subcommands
+
+```bash
+# Validate probe JSONL against data/eval/probe.schema.json
+uv run python scripts/eval_persona.py validate --probes data/eval/probes_v1.jsonl
+
+# Judge calibration against committed DPO preference pairs
+# (does the judge reliably prefer `chosen` over `rejected`?)
+uv run python scripts/eval_persona.py calibrate \
+    --dpo data/dpo/emotion_dpo_tiny.json \
+    --dpo data/dpo/emotion_dpo_tiny_zh.json \
+    --judge-backend anthropic
+
+# List probes (optional filters)
+uv run python scripts/eval_persona.py list \
+    --probes data/eval/probes_v1.jsonl --language en
+
+# Run tests
+uv run pytest scripts/eval/tests/ -q
+```
 
 ```
 scripts/
@@ -31,11 +50,15 @@ scripts/
     ├── candidates.py        OpenAI-compatible + stub candidate clients
     ├── judges.py            Claude + OpenAI + stub judges
     ├── rubric.py            rubric model + judge prompt template
-    └── report.py            aggregate + render (JSONL / JSON / Markdown)
+    ├── report.py            aggregate + render (JSONL / JSON / Markdown)
+    ├── calibrate.py         judge calibration against committed DPO pairs
+    └── tests/               pytest unit tests for the rubric math + loaders
 
 configs/eval/rubric_v1.yaml  weights + penalties
 data/eval/probes_v1.jsonl    seed probe set
-outputs/eval/<run_id>/       per-run artifacts (gitignored)
+data/eval/probe.schema.json  JSON Schema mirror of the Probe pydantic model
+outputs/eval/<run_id>/       per-run eval artifacts (gitignored)
+outputs/eval/calibration/<run_id>/   per-run calibration artifacts (gitignored)
 ```
 
 ## Design notes

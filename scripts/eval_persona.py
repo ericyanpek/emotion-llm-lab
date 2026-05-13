@@ -49,9 +49,22 @@ from dotenv import load_dotenv  # noqa: E402
 from rich.console import Console  # noqa: E402
 from rich.table import Table  # noqa: E402
 
+from scripts.eval.calibrate import (  # noqa: E402
+    CalibrationReport,
+    load_dpo_records,
+    write_calibration_reports,
+)
+from scripts.eval.calibrate import (  # noqa: E402
+    calibrate as run_calibration,
+)
 from scripts.eval.candidates import make_candidate_client  # noqa: E402
 from scripts.eval.judges import make_judge  # noqa: E402
-from scripts.eval.probes import Probe, load_probes, load_system_prompt  # noqa: E402
+from scripts.eval.probes import (  # noqa: E402
+    Probe,
+    load_probes,
+    load_system_prompt,
+    validate_probes_file,
+)
 from scripts.eval.report import build_result, make_run_id, write_reports  # noqa: E402
 from scripts.eval.rubric import load_rubric  # noqa: E402
 
@@ -206,6 +219,118 @@ def list_probes(
         preview = p.instruction if len(p.instruction) <= 80 else p.instruction[:77] + "…"
         table.add_row(p.probe_id, p.probe_type, p.persona_id, p.language, preview)
     console.print(table)
+
+
+@app.command("calibrate")
+def calibrate(
+    dpo: list[Path] = typer.Option(
+        ...,
+        "--dpo",
+        help="Path(s) to DPO JSON file(s) (data/dpo/*.json). Repeat for multiple.",
+    ),
+    out: Path = typer.Option(Path("outputs/eval/calibration"), help="Directory for run artifacts."),
+    rubric_config: Path | None = typer.Option(
+        None, "--rubric", help="Optional rubric YAML (weights, penalties)."
+    ),
+    judge_backend: str = typer.Option("stub", help="Judge backend: stub | anthropic | openai."),
+    judge_model: str | None = typer.Option(None, help="Judge model override."),
+    judge_api_key: str | None = typer.Option(None, help="Judge API key (defaults to env)."),
+    judge_base_url: str | None = typer.Option(None, help="Judge base URL (OpenAI backend only)."),
+    language: str | None = typer.Option(None, help="Filter DPO records by ISO 639-1 language."),
+    drift_probe: str | None = typer.Option(None, help="Filter DPO records by drift_probe value."),
+    limit: int | None = typer.Option(None, min=1, help="Cap number of DPO records (smoke)."),
+) -> None:
+    """Calibrate the judge against committed DPO preference pairs.
+
+    For each (chosen, rejected) pair, the judge scores both replies. We report
+    how often the judge's weighted score for `chosen` exceeds `rejected` —
+    agreement rate, mean margin, and slices by language / drift_probe.
+
+    A healthy judge should show ≥ 90% agreement on our committed DPO data
+    (which is human-curated, so disagreements point at judge / rubric gaps).
+    """
+    load_dotenv(override=False)
+
+    records = load_dpo_records(dpo)
+    if language is not None:
+        records = [r for r in records if r.language == language]
+    if drift_probe is not None:
+        records = [r for r in records if r.drift_probe == drift_probe]
+    if limit is not None:
+        records = records[:limit]
+    if not records:
+        console.print("[red]No DPO records matched the given filters.[/red]")
+        raise typer.Exit(code=2)
+
+    rubric = load_rubric(rubric_config)
+    judge = make_judge(
+        backend=judge_backend,
+        model=judge_model,
+        api_key=judge_api_key,
+        base_url=judge_base_url,
+    )
+
+    console.print(
+        f"[bold]Calibrating[/bold] {len(records)} pair(s) "
+        f"judge=[cyan]{judge_backend}:{judge.model}[/cyan] "
+        f"rubric=[cyan]{rubric.version}[/cyan]"
+    )
+    pairs = run_calibration(records=records, judge=judge, rubric=rubric)
+    for p in pairs:
+        marker = {
+            "agree": "[green]✓[/green]",
+            "tie": "[yellow]~[/yellow]",
+            "disagree": "[red]✗[/red]",
+        }[p.outcome]
+        console.print(
+            f"  {marker} #{p.index} {p.drift_probe}/{p.language} "
+            f"chosen={p.weighted_chosen:.2f} rejected={p.weighted_rejected:.2f} "
+            f"margin={p.margin:+.2f}"
+        )
+
+    report = CalibrationReport(
+        pairs=pairs,
+        judge_model=judge.model,
+        judge_backend=judge_backend,
+        rubric_version=rubric.version,
+        source_paths=[str(p) for p in dpo],
+    )
+    run_id = make_run_id()
+    pairs_path, summary_path, md_path = write_calibration_reports(
+        out_dir=out, run_id=run_id, report=report, rubric=rubric
+    )
+    agg = report.aggregate()
+    console.print()
+    console.print(f"[green]✓ calibration {run_id}[/green]")
+    console.print(
+        f"  agree={agg['agree_rate']:.1%}  tie={agg['tie_rate']:.1%}  "
+        f"disagree={agg['disagree_rate']:.1%}  mean_margin={agg['mean_margin']:+.2f}"
+    )
+    console.print(f"  pairs   : {pairs_path}")
+    console.print(f"  summary : {summary_path}")
+    console.print(f"  report  : {md_path}")
+
+
+@app.command("validate")
+def validate(
+    probes: Path = typer.Option(..., help="Path to probes JSONL file."),
+    schema: Path | None = typer.Option(
+        None, help="Override the default data/eval/probe.schema.json path."
+    ),
+) -> None:
+    """Validate a probes JSONL file against data/eval/probe.schema.json.
+
+    Exit code 0 on success, 1 if any line violates the schema. Belt-and-
+    suspenders on top of the pydantic loader — useful in pre-commit / CI.
+    """
+    errors = validate_probes_file(probes, schema_path=schema)
+    if not errors:
+        console.print(f"[green]✓[/green] {probes} — all records valid")
+        return
+    console.print(f"[red]✗[/red] {probes} — {len(errors)} error(s):")
+    for line_no, msg in errors:
+        console.print(f"  line {line_no}: {msg}")
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
